@@ -10,9 +10,9 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
-enum Commands {
-    /// Remesh a messy mesh file (.obj or .glb)
-    Remesh {
+enum RemeshCommands {
+    /// Incremental remeshing (edge-based operations)
+    Incremental {
         /// Input mesh file (.obj or .glb)
         input: PathBuf,
 
@@ -31,6 +31,77 @@ enum Commands {
         /// Target edge length for remeshing (default: 0.01)
         #[arg(short, long, default_value_t = 0.01)]
         target_edge_length: f32,
+    },
+
+    /// Voxel-based remeshing (converts to SDF then remeshes)
+    Voxel {
+        /// Input mesh file (.obj or .glb)
+        input: PathBuf,
+
+        /// Output mesh file (.obj)
+        #[arg(short, long)]
+        out: PathBuf,
+
+        /// Mesh name (required if GLB contains multiple meshes)
+        #[arg(short, long)]
+        mesh: Option<String>,
+
+        /// Voxel size (controls output resolution, default: 0.01)
+        #[arg(short, long, default_value_t = 0.01)]
+        size: f32,
+
+        /// Meshing method
+        #[arg(short = 'M', long, default_value = "manifold")]
+        method: VoxelMethod,
+    },
+}
+
+#[derive(Clone, Debug, clap::ValueEnum)]
+enum VoxelMethod {
+    /// Feature-preserving (may produce non-manifold meshes)
+    FeaturePreserving,
+    /// Guarantees manifold output (watertight)
+    Manifold,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Remesh a mesh file (fixes then incrementally remeshes, or use subcommands for specific methods)
+    Remesh {
+        /// Input mesh file (.obj or .glb)
+        #[arg(required_unless_present = "command")]
+        input: Option<PathBuf>,
+
+        /// Output mesh file (.obj)
+        #[arg(short, long, required_unless_present = "command")]
+        out: Option<PathBuf>,
+
+        /// Mesh name (required if GLB contains multiple meshes)
+        #[arg(short, long)]
+        mesh: Option<String>,
+
+        /// Number of incremental remeshing iterations (default: 10)
+        #[arg(short, long, default_value_t = 10)]
+        iterations: u32,
+
+        /// Target edge length for incremental remeshing (default: 0.01)
+        #[arg(short, long, default_value_t = 0.01)]
+        target_edge_length: f32,
+
+        /// Voxel size for fix step (default: 0.01)
+        #[arg(short, long, default_value_t = 0.01)]
+        voxel_size: f32,
+
+        /// Vertex merge tolerance for fix step (default: 0.0001)
+        #[arg(long, default_value_t = 0.0001)]
+        tolerance: f32,
+
+        /// Skip the fix step (just do incremental remesh)
+        #[arg(long, default_value_t = false)]
+        no_fix: bool,
+
+        #[command(subcommand)]
+        command: Option<RemeshCommands>,
     },
 
     /// Display mesh statistics
@@ -52,16 +123,71 @@ enum Commands {
         #[arg(short, long)]
         mesh: Option<String>,
     },
+
+    /// Check if mesh is manifold (watertight)
+    Check {
+        /// Input mesh file (.obj or .glb)
+        input: PathBuf,
+
+        /// Mesh name (required if GLB contains multiple meshes)
+        #[arg(short, long)]
+        mesh: Option<String>,
+    },
+
+    /// Fix holes in mesh automatically
+    Fix {
+        /// Input mesh file (.obj or .glb)
+        input: PathBuf,
+
+        /// Output mesh file (.obj)
+        #[arg(short, long)]
+        out: PathBuf,
+
+        /// Mesh name (required if GLB contains multiple meshes)
+        #[arg(short, long)]
+        mesh: Option<String>,
+
+        /// Voxel size for remeshing (default: 0.01)
+        #[arg(short, long, default_value_t = 0.01)]
+        voxel_size: f32,
+
+        /// Merge vertices closer than this distance before fixing (default: 0.0001)
+        #[arg(short, long, default_value_t = 0.0001)]
+        tolerance: f32,
+
+        /// Skip vertex merging step
+        #[arg(long, default_value_t = false)]
+        no_merge: bool,
+    },
 }
 
 fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Remesh { input, out, mesh, iterations, target_edge_length } => {
-            if let Err(e) = remesh(&input, &out, mesh.as_deref(), iterations, target_edge_length) {
-                eprintln!("Error during remeshing: {}", e);
-                std::process::exit(1);
+        Commands::Remesh { input, out, mesh, iterations, target_edge_length, voxel_size, tolerance, no_fix, command } => {
+            match command {
+                Some(RemeshCommands::Incremental { input, out, mesh, iterations, target_edge_length }) => {
+                    if let Err(e) = remesh_incremental(&input, &out, mesh.as_deref(), iterations, target_edge_length) {
+                        eprintln!("Error during incremental remeshing: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+                Some(RemeshCommands::Voxel { input, out, mesh, size, method }) => {
+                    if let Err(e) = remesh_voxel(&input, &out, mesh.as_deref(), size, method) {
+                        eprintln!("Error during voxel remeshing: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+                None => {
+                    // Direct remesh: fix + incremental
+                    let input = input.expect("input required");
+                    let out = out.expect("output required");
+                    if let Err(e) = remesh_pipeline(&input, &out, mesh.as_deref(), voxel_size, tolerance, no_fix, iterations, target_edge_length) {
+                        eprintln!("Error during remeshing pipeline: {}", e);
+                        std::process::exit(1);
+                    }
+                }
             }
         }
         Commands::Stats { input, mesh } => {
@@ -73,6 +199,18 @@ fn main() {
         Commands::View { input, mesh } => {
             if let Err(e) = view_mesh(&input, mesh.as_deref()) {
                 eprintln!("Error viewing mesh: {}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::Check { input, mesh } => {
+            if let Err(e) = check_manifold(&input, mesh.as_deref()) {
+                eprintln!("Error checking mesh: {}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::Fix { input, out, mesh, voxel_size, tolerance, no_merge } => {
+            if let Err(e) = fix_holes(&input, &out, mesh.as_deref(), voxel_size, tolerance, no_merge) {
+                eprintln!("Error fixing mesh: {}", e);
                 std::process::exit(1);
             }
         }
@@ -202,7 +340,7 @@ fn load_mesh_from_glb(path: &PathBuf, mesh_name: Option<&str>) -> Result<baby_sh
         .map_err(|e| format!("Failed to build mesh: {:?}", e).into())
 }
 
-fn remesh(input: &PathBuf, output: &PathBuf, mesh_name: Option<&str>, iterations: u32, target_edge_length: f32) -> Result<(), Box<dyn std::error::Error>> {
+fn remesh_incremental(input: &PathBuf, output: &PathBuf, mesh_name: Option<&str>, iterations: u32, target_edge_length: f32) -> Result<(), Box<dyn std::error::Error>> {
     use baby_shark::io::write_to_file;
     use baby_shark::remeshing::incremental::IncrementalRemesher;
 
@@ -235,6 +373,150 @@ fn remesh(input: &PathBuf, output: &PathBuf, mesh_name: Option<&str>, iterations
     println!("Writing output to {:?}...", output);
 
     write_to_file(&mesh, output)
+        .map_err(|e| format!("Failed to write mesh: {:?}", e))?;
+
+    println!("Done!");
+    Ok(())
+}
+
+fn remesh_pipeline(
+    input: &PathBuf,
+    output: &PathBuf,
+    mesh_name: Option<&str>,
+    voxel_size: f32,
+    tolerance: f32,
+    no_fix: bool,
+    iterations: u32,
+    target_edge_length: f32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use baby_shark::io::write_to_file;
+    use baby_shark::remeshing::incremental::IncrementalRemesher;
+    use baby_shark::remeshing::voxel::{VoxelRemesher, MeshingMethod};
+
+    println!("Loading mesh from {:?}...", input);
+    let mut mesh = load_mesh(input, mesh_name)?;
+
+    let vertex_count_initial = mesh.count_vertices();
+    let face_count_initial = mesh.count_faces();
+
+    println!("Initial: {} vertices, {} faces", vertex_count_initial, face_count_initial);
+
+    // Step 1: Fix the mesh (unless disabled)
+    if !no_fix {
+        println!("\n=== Step 1: Fixing Mesh ===");
+
+        // Merge close vertices
+        mesh = merge_close_vertices(&mesh, tolerance)?;
+        println!("After merging: {} vertices, {} faces", mesh.count_vertices(), mesh.count_faces());
+
+        // Check if mesh needs hole fixing
+        let boundary_rings = mesh.boundary_rings();
+        if !boundary_rings.is_empty() {
+            println!("Found {} hole(s) in mesh", boundary_rings.len());
+            println!("Fixing holes using voxel remeshing (voxel size: {})...", voxel_size);
+
+            let mut remesher = VoxelRemesher::default()
+                .with_voxel_size(voxel_size)
+                .with_meshing_method(MeshingMethod::Manifold);
+
+            mesh = remesher.remesh(&mesh)
+                .ok_or("Voxel remeshing failed")?;
+
+            println!("After fixing: {} vertices, {} faces", mesh.count_vertices(), mesh.count_faces());
+
+            let boundary_rings_after = mesh.boundary_rings();
+            if boundary_rings_after.is_empty() {
+                println!("✓ Mesh is now manifold!");
+            } else {
+                println!("⚠ Warning: {} hole(s) remain", boundary_rings_after.len());
+            }
+        } else {
+            println!("✓ Mesh is already manifold (no holes to fix)");
+        }
+    }
+
+    // Step 2: Incremental remeshing
+    println!("\n=== Step 2: Incremental Remeshing ===");
+    println!("Remeshing with {} iterations, target edge length: {}...", iterations, target_edge_length);
+
+    let vertex_count_before_incremental = mesh.count_vertices();
+    let face_count_before_incremental = mesh.count_faces();
+
+    let iterations_u16 = iterations.min(u16::MAX as u32) as u16;
+
+    let remesher = IncrementalRemesher::new()
+        .with_iterations_count(iterations_u16)
+        .with_split_edges(true)
+        .with_collapse_edges(true)
+        .with_flip_edges(true)
+        .with_shift_vertices(true)
+        .with_project_vertices(true);
+
+    remesher.remesh(&mut mesh, target_edge_length);
+
+    let vertex_count_final = mesh.count_vertices();
+    let face_count_final = mesh.count_faces();
+
+    println!("After incremental remeshing: {} vertices, {} faces", vertex_count_final, face_count_final);
+
+    // Final summary
+    println!("\n=== Summary ===");
+    println!("Initial:  {} vertices, {} faces", vertex_count_initial, face_count_initial);
+    if !no_fix {
+        println!("After fix: {} vertices, {} faces", vertex_count_before_incremental, face_count_before_incremental);
+    }
+    println!("Final:    {} vertices, {} faces", vertex_count_final, face_count_final);
+
+    println!("\nWriting output to {:?}...", output);
+    write_to_file(&mesh, output)
+        .map_err(|e| format!("Failed to write mesh: {:?}", e))?;
+
+    println!("Done!");
+    Ok(())
+}
+
+fn remesh_voxel(input: &PathBuf, output: &PathBuf, mesh_name: Option<&str>, voxel_size: f32, method: VoxelMethod) -> Result<(), Box<dyn std::error::Error>> {
+    use baby_shark::remeshing::voxel::{VoxelRemesher, MeshingMethod};
+
+    println!("Loading mesh from {:?}...", input);
+    let mesh = load_mesh(input, mesh_name)?;
+
+    let vertex_count_before = mesh.count_vertices();
+    let face_count_before = mesh.count_faces();
+
+    println!("Before remeshing: {} vertices, {} faces", vertex_count_before, face_count_before);
+    println!("Voxel remeshing with method: {:?}, voxel size: {}", method, voxel_size);
+
+    let meshing_method = match method {
+        VoxelMethod::FeaturePreserving => MeshingMethod::FeaturePreserving,
+        VoxelMethod::Manifold => MeshingMethod::Manifold,
+    };
+
+    let mut remesher = VoxelRemesher::default()
+        .with_voxel_size(voxel_size)
+        .with_meshing_method(meshing_method);
+
+    let remeshed_mesh = remesher.remesh(&mesh)
+        .ok_or("Voxel remeshing failed")?;
+
+    let vertex_count_after = remeshed_mesh.count_vertices();
+    let face_count_after = remeshed_mesh.count_faces();
+
+    println!("After remeshing: {} vertices, {} faces", vertex_count_after, face_count_after);
+
+    // Check manifold status if using Manifold method
+    if matches!(method, VoxelMethod::Manifold) {
+        let boundary_rings = remeshed_mesh.boundary_rings();
+        if boundary_rings.is_empty() {
+            println!("✓ Output mesh is manifold (watertight)");
+        } else {
+            println!("⚠ Warning: {} boundary ring(s) detected", boundary_rings.len());
+        }
+    }
+
+    println!("Writing output to {:?}...", output);
+    use baby_shark::io::write_to_file;
+    write_to_file(&remeshed_mesh, output)
         .map_err(|e| format!("Failed to write mesh: {:?}", e))?;
 
     println!("Done!");
@@ -465,5 +747,187 @@ fn view_mesh(input: &PathBuf, mesh_name: Option<&str>) -> Result<(), Box<dyn std
         }
     }
 
+    Ok(())
+}
+
+fn check_manifold(input: &PathBuf, mesh_name: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Loading mesh from {:?}...", input);
+    let mesh = load_mesh(input, mesh_name)?;
+
+    println!("\n=== Manifold Check ===");
+    println!("Analyzing mesh topology...\n");
+
+    // Check boundary rings (holes)
+    let boundary_rings = mesh.boundary_rings();
+
+    if boundary_rings.is_empty() {
+        println!("✓ Mesh is MANIFOLD (watertight)");
+        println!("  No holes or boundaries detected.");
+    } else {
+        println!("✗ Mesh is NOT MANIFOLD");
+        println!("  Found {} boundary ring(s) (holes):\n", boundary_rings.len());
+
+        for (i, ring) in boundary_rings.iter().enumerate() {
+            let mut edge_count = 0;
+            mesh.boundary_edges(*ring, |_edge| {
+                edge_count += 1;
+                std::ops::ControlFlow::Continue(())
+            });
+
+            println!("  Hole {}: {} boundary edges", i + 1, edge_count);
+        }
+
+        println!("\nTo fix these holes, run:");
+        println!("  msh fix {:?} --out <output.obj>", input);
+    }
+
+    Ok(())
+}
+
+/// Merge vertices that are closer than tolerance
+fn merge_close_vertices(
+    mesh: &baby_shark::mesh::corner_table::CornerTableF,
+    tolerance: f32,
+) -> Result<baby_shark::mesh::corner_table::CornerTableF, Box<dyn std::error::Error>> {
+    use baby_shark::algo::merge_points::merge_points;
+    use baby_shark::io::{Builder, IndexedBuilder};
+    use baby_shark::exports::nalgebra::Vector3;
+
+    println!("Merging vertices with tolerance: {}", tolerance);
+
+    let vertex_count_before = mesh.count_vertices();
+
+    // Extract all vertex positions and build a VertexId -> index mapping
+    let mut positions: Vec<[f32; 3]> = Vec::new();
+    let mut vertex_id_to_idx: std::collections::HashMap<_, usize> = std::collections::HashMap::new();
+
+    for (idx, vertex_id) in mesh.vertices().enumerate() {
+        let pos = mesh.vertex_position(vertex_id);
+        positions.push([pos.x, pos.y, pos.z]);
+        vertex_id_to_idx.insert(vertex_id, idx);
+    }
+
+    // Quantize positions to tolerance grid
+    let inv_tolerance = 1.0 / tolerance;
+    let quantized_positions: Vec<Vector3<f32>> = positions
+        .iter()
+        .map(|pos| {
+            Vector3::new(
+                (pos[0] * inv_tolerance).round() * tolerance,
+                (pos[1] * inv_tolerance).round() * tolerance,
+                (pos[2] * inv_tolerance).round() * tolerance,
+            )
+        })
+        .collect();
+
+    // Merge quantized vertices
+    let merged = merge_points(quantized_positions.into_iter());
+
+    println!("Merged {} vertices into {} unique vertices",
+             vertex_count_before, merged.points.len());
+
+    // Build vertex mapping: old vertex array index -> new vertex index
+    let vertex_map: Vec<usize> = merged.indices;
+
+    // Rebuild mesh with merged vertices
+    let mut builder = baby_shark::mesh::corner_table::CornerTableF::builder_indexed();
+    builder.set_num_vertices(merged.points.len());
+
+    for point in &merged.points {
+        builder.add_vertex([point.x, point.y, point.z])
+            .map_err(|e| format!("Failed to add vertex: {:?}", e))?;
+    }
+
+    // Add faces with remapped vertex indices
+    let face_count = mesh.count_faces();
+    builder.set_num_faces(face_count);
+
+    for face_id in mesh.faces() {
+        let (v0_id, v1_id, v2_id) = mesh.face_vertices(face_id);
+        let v0_idx = vertex_id_to_idx[&v0_id];
+        let v1_idx = vertex_id_to_idx[&v1_id];
+        let v2_idx = vertex_id_to_idx[&v2_id];
+        let v0 = vertex_map[v0_idx];
+        let v1 = vertex_map[v1_idx];
+        let v2 = vertex_map[v2_idx];
+
+        // Skip degenerate faces (where vertices got merged into same point)
+        if v0 != v1 && v1 != v2 && v0 != v2 {
+            if let Err(e) = builder.add_face(v0, v1, v2) {
+                // Skip faces that fail to add (likely degenerate)
+                eprintln!("Warning: Skipping degenerate face: {:?}", e);
+            }
+        }
+    }
+
+    builder.finish()
+        .map_err(|e| format!("Failed to build merged mesh: {:?}", e).into())
+}
+
+fn fix_holes(input: &PathBuf, output: &PathBuf, mesh_name: Option<&str>, voxel_size: f32, tolerance: f32, no_merge: bool) -> Result<(), Box<dyn std::error::Error>> {
+    use baby_shark::remeshing::voxel::{VoxelRemesher, MeshingMethod};
+
+    println!("Loading mesh from {:?}...", input);
+    let mut mesh = load_mesh(input, mesh_name)?;
+
+    let vertex_count_initial = mesh.count_vertices();
+    let face_count_initial = mesh.count_faces();
+
+    println!("Initial: {} vertices, {} faces", vertex_count_initial, face_count_initial);
+
+    // Merge close vertices first (unless disabled)
+    if !no_merge {
+        mesh = merge_close_vertices(&mesh, tolerance)?;
+        println!("After merging: {} vertices, {} faces", mesh.count_vertices(), mesh.count_faces());
+    }
+
+    // Check if mesh needs fixing
+    let boundary_rings = mesh.boundary_rings();
+    if boundary_rings.is_empty() {
+        println!("Mesh is already manifold (watertight). No fixing needed.");
+
+        // Still write the output if we merged vertices
+        if !no_merge && mesh.count_vertices() < vertex_count_initial {
+            println!("Writing merged mesh to {:?}...", output);
+            use baby_shark::io::write_to_file;
+            write_to_file(&mesh, output)
+                .map_err(|e| format!("Failed to write mesh: {:?}", e))?;
+            println!("Done!");
+        }
+
+        return Ok(());
+    }
+
+    println!("Found {} hole(s) in mesh", boundary_rings.len());
+    println!("Fixing holes using voxel remeshing...");
+    println!("Voxel size: {}", voxel_size);
+
+    // Use voxel remeshing with Manifold method to close holes
+    let mut remesher = VoxelRemesher::default()
+        .with_voxel_size(voxel_size)
+        .with_meshing_method(MeshingMethod::Manifold);
+
+    let fixed_mesh = remesher.remesh(&mesh)
+        .ok_or("Voxel remeshing failed")?;
+
+    let vertex_count_after = fixed_mesh.count_vertices();
+    let face_count_after = fixed_mesh.count_faces();
+
+    println!("After: {} vertices, {} faces", vertex_count_after, face_count_after);
+
+    // Verify the result
+    let boundary_rings_after = fixed_mesh.boundary_rings();
+    if boundary_rings_after.is_empty() {
+        println!("✓ Mesh is now manifold!");
+    } else {
+        println!("⚠ Warning: {} hole(s) remain (may need smaller voxel size)", boundary_rings_after.len());
+    }
+
+    println!("Writing output to {:?}...", output);
+    use baby_shark::io::write_to_file;
+    write_to_file(&fixed_mesh, output)
+        .map_err(|e| format!("Failed to write mesh: {:?}", e))?;
+
+    println!("Done!");
     Ok(())
 }
