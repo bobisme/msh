@@ -1,7 +1,16 @@
 [package]
-name = "msh"
+name = "mshmash"
 version = "0.1.0"
 edition = "2024"
+description = "A CLI tool for 3D mesh analysis, repair, and visualization"
+license = "MIT"
+repository = "https://github.com/bobisme/msh"
+keywords = ["mesh", "3d", "remeshing", "cli"]
+categories = ["command-line-utilities", "graphics"]
+
+[[bin]]
+name = "msh"
+path = "src/main.rs"
 
 [dependencies]
 baby_shark = "0.3.12"
