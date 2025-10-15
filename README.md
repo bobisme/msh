@@ -1,10 +1,12 @@
 # msh - 3D Mesh CLI Tool
 
-A command-line tool for 3D mesh analysis, repair, and visualization. Supports `.obj` and `.glb` file formats.
+A command-line tool for 3D mesh analysis, repair, and visualization. Supports
+`.obj` and `.glb` file formats.
 
 ## Features
 
-- **Mesh Remeshing**: Fix and incrementally remesh your 3D models with multiple algorithms
+- **Mesh Remeshing**: Fix and incrementally remesh your 3D models with multiple
+  algorithms
 - **3D Viewer**: Interactive viewer for inspecting meshes
 - **Mesh Analysis**: Get detailed statistics about your mesh
 - **Manifold Checking**: Verify if your mesh is watertight
@@ -52,21 +54,26 @@ msh remesh scene.glb --out output.obj --mesh meshname
 
 - `-o, --out <OUT>`: Output mesh file (.obj) - **required**
 - `-m, --mesh <MESH>`: Mesh name (required if GLB contains multiple meshes)
-- `-i, --iterations <ITERATIONS>`: Number of incremental remeshing iterations (default: 10)
-- `-t, --target-edge-length <TARGET_EDGE_LENGTH>`: Target edge length for incremental remeshing (default: 0.01)
+- `-i, --iterations <ITERATIONS>`: Number of incremental remeshing iterations
+  (default: 10)
+- `-t, --target-edge-length <TARGET_EDGE_LENGTH>`: Target edge length for
+  incremental remeshing (default: 0.01)
 - `-v, --voxel-size <VOXEL_SIZE>`: Voxel size for fix step (default: 0.01)
-- `--tolerance <TOLERANCE>`: Vertex merge tolerance for fix step (default: 0.0001)
+- `--tolerance <TOLERANCE>`: Vertex merge tolerance for fix step (default:
+  0.0001)
 - `--no-fix`: Skip the fix step (just do incremental remesh)
 
 **Remeshing Methods:**
 
-- **Incremental** (default): Edge-based operations that progressively improve mesh quality
+- **Incremental** (default): Edge-based operations that progressively improve
+  mesh quality
 
   ```bash
   msh remesh model.obj --out output.obj incremental
   ```
 
-- **Voxel**: Converts mesh to signed distance field (SDF) then remeshes for clean topology
+- **Voxel**: Converts mesh to signed distance field (SDF) then remeshes for
+  clean topology
 
   ```bash
   msh remesh model.obj --out output.obj voxel
@@ -113,7 +120,8 @@ msh fix damaged.obj --out fixed.obj
 - `-o, --out <OUT>`: Output mesh file (.obj) - **required**
 - `-m, --mesh <MESH>`: Mesh name (required if GLB contains multiple meshes)
 - `-v, --voxel-size <VOXEL_SIZE>`: Voxel size for remeshing (default: 0.01)
-- `-t, --tolerance <TOLERANCE>`: Merge vertices closer than this distance before fixing (default: 0.0001)
+- `-t, --tolerance <TOLERANCE>`: Merge vertices closer than this distance before
+  fixing (default: 0.0001)
 - `--no-merge`: Skip vertex merging step
 
 ## Supported Formats
