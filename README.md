@@ -16,13 +16,9 @@ A command-line tool for 3D mesh analysis, repair, and visualization. Supports
 
 ## Installation
 
-Build from source:
-
 ```bash
-cargo build --release
+cargo install mshmash
 ```
-
-The executable will be available at `./target/release/msh`.
 
 ## Usage
 
