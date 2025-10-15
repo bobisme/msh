@@ -165,15 +165,43 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Remesh { input, out, mesh, iterations, target_edge_length, voxel_size, tolerance, no_fix, command } => {
+        Commands::Remesh {
+            input,
+            out,
+            mesh,
+            iterations,
+            target_edge_length,
+            voxel_size,
+            tolerance,
+            no_fix,
+            command,
+        } => {
             match command {
-                Some(RemeshCommands::Incremental { input, out, mesh, iterations, target_edge_length }) => {
-                    if let Err(e) = remesh_incremental(&input, &out, mesh.as_deref(), iterations, target_edge_length) {
+                Some(RemeshCommands::Incremental {
+                    input,
+                    out,
+                    mesh,
+                    iterations,
+                    target_edge_length,
+                }) => {
+                    if let Err(e) = remesh_incremental(
+                        &input,
+                        &out,
+                        mesh.as_deref(),
+                        iterations,
+                        target_edge_length,
+                    ) {
                         eprintln!("Error during incremental remeshing: {}", e);
                         std::process::exit(1);
                     }
                 }
-                Some(RemeshCommands::Voxel { input, out, mesh, size, method }) => {
+                Some(RemeshCommands::Voxel {
+                    input,
+                    out,
+                    mesh,
+                    size,
+                    method,
+                }) => {
                     if let Err(e) = remesh_voxel(&input, &out, mesh.as_deref(), size, method) {
                         eprintln!("Error during voxel remeshing: {}", e);
                         std::process::exit(1);
@@ -183,7 +211,16 @@ fn main() {
                     // Direct remesh: fix + incremental
                     let input = input.expect("input required");
                     let out = out.expect("output required");
-                    if let Err(e) = remesh_pipeline(&input, &out, mesh.as_deref(), voxel_size, tolerance, no_fix, iterations, target_edge_length) {
+                    if let Err(e) = remesh_pipeline(
+                        &input,
+                        &out,
+                        mesh.as_deref(),
+                        voxel_size,
+                        tolerance,
+                        no_fix,
+                        iterations,
+                        target_edge_length,
+                    ) {
                         eprintln!("Error during remeshing pipeline: {}", e);
                         std::process::exit(1);
                     }
@@ -208,8 +245,22 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        Commands::Fix { input, out, mesh, voxel_size, tolerance, no_merge } => {
-            if let Err(e) = fix_holes(&input, &out, mesh.as_deref(), voxel_size, tolerance, no_merge) {
+        Commands::Fix {
+            input,
+            out,
+            mesh,
+            voxel_size,
+            tolerance,
+            no_merge,
+        } => {
+            if let Err(e) = fix_holes(
+                &input,
+                &out,
+                mesh.as_deref(),
+                voxel_size,
+                tolerance,
+                no_merge,
+            ) {
                 eprintln!("Error fixing mesh: {}", e);
                 std::process::exit(1);
             }
@@ -218,8 +269,12 @@ fn main() {
 }
 
 /// Load mesh from file (supports .obj and .glb)
-fn load_mesh(input: &PathBuf, mesh_name: Option<&str>) -> Result<baby_shark::mesh::corner_table::CornerTableF, Box<dyn std::error::Error>> {
-    let extension = input.extension()
+fn load_mesh(
+    input: &PathBuf,
+    mesh_name: Option<&str>,
+) -> Result<baby_shark::mesh::corner_table::CornerTableF, Box<dyn std::error::Error>> {
+    let extension = input
+        .extension()
         .and_then(|s| s.to_str())
         .map(|s| s.to_lowercase())
         .ok_or("File has no extension")?;
@@ -227,18 +282,18 @@ fn load_mesh(input: &PathBuf, mesh_name: Option<&str>) -> Result<baby_shark::mes
     match extension.as_str() {
         "obj" => {
             use baby_shark::io::read_from_file;
-            read_from_file(input)
-                .map_err(|e| format!("Failed to read OBJ file: {:?}", e).into())
+            read_from_file(input).map_err(|e| format!("Failed to read OBJ file: {:?}", e).into())
         }
-        "glb" | "gltf" => {
-            load_mesh_from_glb(input, mesh_name)
-        }
-        _ => Err(format!("Unsupported file format: {}", extension).into())
+        "glb" | "gltf" => load_mesh_from_glb(input, mesh_name),
+        _ => Err(format!("Unsupported file format: {}", extension).into()),
     }
 }
 
 /// Load mesh from GLB/glTF file
-fn load_mesh_from_glb(path: &PathBuf, mesh_name: Option<&str>) -> Result<baby_shark::mesh::corner_table::CornerTableF, Box<dyn std::error::Error>> {
+fn load_mesh_from_glb(
+    path: &PathBuf,
+    mesh_name: Option<&str>,
+) -> Result<baby_shark::mesh::corner_table::CornerTableF, Box<dyn std::error::Error>> {
     let (document, buffers, _images) = gltf::import(path)?;
 
     let meshes: Vec<_> = document.meshes().collect();
@@ -254,7 +309,8 @@ fn load_mesh_from_glb(path: &PathBuf, mesh_name: Option<&str>) -> Result<baby_sh
         // Multiple meshes - need mesh name
         match mesh_name {
             None => {
-                let mesh_list: Vec<String> = meshes.iter()
+                let mesh_list: Vec<String> = meshes
+                    .iter()
                     .map(|m| m.name().unwrap_or("<unnamed>").to_string())
                     .collect();
                 return Err(format!(
@@ -263,24 +319,27 @@ fn load_mesh_from_glb(path: &PathBuf, mesh_name: Option<&str>) -> Result<baby_sh
                     mesh_list.join(", ")
                 ).into());
             }
-            Some(name) => {
-                meshes.iter()
-                    .find(|m| m.name() == Some(name))
-                    .ok_or_else(|| {
-                        let mesh_list: Vec<String> = meshes.iter()
-                            .map(|m| m.name().unwrap_or("<unnamed>").to_string())
-                            .collect();
-                        format!(
-                            "Mesh '{}' not found in GLB file.\nAvailable meshes: {}",
-                            name,
-                            mesh_list.join(", ")
-                        )
-                    })?
-            }
+            Some(name) => meshes
+                .iter()
+                .find(|m| m.name() == Some(name))
+                .ok_or_else(|| {
+                    let mesh_list: Vec<String> = meshes
+                        .iter()
+                        .map(|m| m.name().unwrap_or("<unnamed>").to_string())
+                        .collect();
+                    format!(
+                        "Mesh '{}' not found in GLB file.\nAvailable meshes: {}",
+                        name,
+                        mesh_list.join(", ")
+                    )
+                })?,
         }
     };
 
-    println!("Loading mesh: {}", selected_mesh.name().unwrap_or("<unnamed>"));
+    println!(
+        "Loading mesh: {}",
+        selected_mesh.name().unwrap_or("<unnamed>")
+    );
 
     // Extract vertex positions and indices from all primitives
     let mut all_positions = Vec::new();
@@ -291,7 +350,8 @@ fn load_mesh_from_glb(path: &PathBuf, mesh_name: Option<&str>) -> Result<baby_sh
         // Get positions
         let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
 
-        let positions = reader.read_positions()
+        let positions = reader
+            .read_positions()
             .ok_or("Primitive has no position data")?;
 
         let pos_vec: Vec<[f32; 3]> = positions.collect();
@@ -321,7 +381,8 @@ fn load_mesh_from_glb(path: &PathBuf, mesh_name: Option<&str>) -> Result<baby_sh
 
     builder.set_num_vertices(all_positions.len());
     for pos in all_positions {
-        builder.add_vertex(pos)
+        builder
+            .add_vertex(pos)
             .map_err(|e| format!("Failed to add vertex: {:?}", e))?;
     }
 
@@ -332,15 +393,23 @@ fn load_mesh_from_glb(path: &PathBuf, mesh_name: Option<&str>) -> Result<baby_sh
 
     builder.set_num_faces(all_indices.len() / 3);
     for chunk in all_indices.chunks(3) {
-        builder.add_face(chunk[0] as usize, chunk[1] as usize, chunk[2] as usize)
+        builder
+            .add_face(chunk[0] as usize, chunk[1] as usize, chunk[2] as usize)
             .map_err(|e| format!("Failed to add face: {:?}", e))?;
     }
 
-    builder.finish()
+    builder
+        .finish()
         .map_err(|e| format!("Failed to build mesh: {:?}", e).into())
 }
 
-fn remesh_incremental(input: &PathBuf, output: &PathBuf, mesh_name: Option<&str>, iterations: u32, target_edge_length: f32) -> Result<(), Box<dyn std::error::Error>> {
+fn remesh_incremental(
+    input: &PathBuf,
+    output: &PathBuf,
+    mesh_name: Option<&str>,
+    iterations: u32,
+    target_edge_length: f32,
+) -> Result<(), Box<dyn std::error::Error>> {
     use baby_shark::io::write_to_file;
     use baby_shark::remeshing::incremental::IncrementalRemesher;
 
@@ -350,8 +419,14 @@ fn remesh_incremental(input: &PathBuf, output: &PathBuf, mesh_name: Option<&str>
     let vertex_count_before = mesh.count_vertices();
     let face_count_before = mesh.count_faces();
 
-    println!("Before remeshing: {} vertices, {} faces", vertex_count_before, face_count_before);
-    println!("Remeshing with {} iterations, target edge length: {}...", iterations, target_edge_length);
+    println!(
+        "Before remeshing: {} vertices, {} faces",
+        vertex_count_before, face_count_before
+    );
+    println!(
+        "Remeshing with {} iterations, target edge length: {}...",
+        iterations, target_edge_length
+    );
 
     // Convert u32 to u16 for iterations
     let iterations_u16 = iterations.min(u16::MAX as u32) as u16;
@@ -369,11 +444,13 @@ fn remesh_incremental(input: &PathBuf, output: &PathBuf, mesh_name: Option<&str>
     let vertex_count_after = mesh.count_vertices();
     let face_count_after = mesh.count_faces();
 
-    println!("After remeshing: {} vertices, {} faces", vertex_count_after, face_count_after);
+    println!(
+        "After remeshing: {} vertices, {} faces",
+        vertex_count_after, face_count_after
+    );
     println!("Writing output to {:?}...", output);
 
-    write_to_file(&mesh, output)
-        .map_err(|e| format!("Failed to write mesh: {:?}", e))?;
+    write_to_file(&mesh, output).map_err(|e| format!("Failed to write mesh: {:?}", e))?;
 
     println!("Done!");
     Ok(())
@@ -391,7 +468,7 @@ fn remesh_pipeline(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use baby_shark::io::write_to_file;
     use baby_shark::remeshing::incremental::IncrementalRemesher;
-    use baby_shark::remeshing::voxel::{VoxelRemesher, MeshingMethod};
+    use baby_shark::remeshing::voxel::{MeshingMethod, VoxelRemesher};
 
     println!("Loading mesh from {:?}...", input);
     let mut mesh = load_mesh(input, mesh_name)?;
@@ -399,7 +476,10 @@ fn remesh_pipeline(
     let vertex_count_initial = mesh.count_vertices();
     let face_count_initial = mesh.count_faces();
 
-    println!("Initial: {} vertices, {} faces", vertex_count_initial, face_count_initial);
+    println!(
+        "Initial: {} vertices, {} faces",
+        vertex_count_initial, face_count_initial
+    );
 
     // Step 1: Fix the mesh (unless disabled)
     if !no_fix {
@@ -407,22 +487,32 @@ fn remesh_pipeline(
 
         // Merge close vertices
         mesh = merge_close_vertices(&mesh, tolerance)?;
-        println!("After merging: {} vertices, {} faces", mesh.count_vertices(), mesh.count_faces());
+        println!(
+            "After merging: {} vertices, {} faces",
+            mesh.count_vertices(),
+            mesh.count_faces()
+        );
 
         // Check if mesh needs hole fixing
         let boundary_rings = mesh.boundary_rings();
         if !boundary_rings.is_empty() {
             println!("Found {} hole(s) in mesh", boundary_rings.len());
-            println!("Fixing holes using voxel remeshing (voxel size: {})...", voxel_size);
+            println!(
+                "Fixing holes using voxel remeshing (voxel size: {})...",
+                voxel_size
+            );
 
             let mut remesher = VoxelRemesher::default()
                 .with_voxel_size(voxel_size)
                 .with_meshing_method(MeshingMethod::Manifold);
 
-            mesh = remesher.remesh(&mesh)
-                .ok_or("Voxel remeshing failed")?;
+            mesh = remesher.remesh(&mesh).ok_or("Voxel remeshing failed")?;
 
-            println!("After fixing: {} vertices, {} faces", mesh.count_vertices(), mesh.count_faces());
+            println!(
+                "After fixing: {} vertices, {} faces",
+                mesh.count_vertices(),
+                mesh.count_faces()
+            );
 
             let boundary_rings_after = mesh.boundary_rings();
             if boundary_rings_after.is_empty() {
@@ -437,7 +527,10 @@ fn remesh_pipeline(
 
     // Step 2: Incremental remeshing
     println!("\n=== Step 2: Incremental Remeshing ===");
-    println!("Remeshing with {} iterations, target edge length: {}...", iterations, target_edge_length);
+    println!(
+        "Remeshing with {} iterations, target edge length: {}...",
+        iterations, target_edge_length
+    );
 
     let vertex_count_before_incremental = mesh.count_vertices();
     let face_count_before_incremental = mesh.count_faces();
@@ -457,26 +550,43 @@ fn remesh_pipeline(
     let vertex_count_final = mesh.count_vertices();
     let face_count_final = mesh.count_faces();
 
-    println!("After incremental remeshing: {} vertices, {} faces", vertex_count_final, face_count_final);
+    println!(
+        "After incremental remeshing: {} vertices, {} faces",
+        vertex_count_final, face_count_final
+    );
 
     // Final summary
     println!("\n=== Summary ===");
-    println!("Initial:  {} vertices, {} faces", vertex_count_initial, face_count_initial);
+    println!(
+        "Initial:  {} vertices, {} faces",
+        vertex_count_initial, face_count_initial
+    );
     if !no_fix {
-        println!("After fix: {} vertices, {} faces", vertex_count_before_incremental, face_count_before_incremental);
+        println!(
+            "After fix: {} vertices, {} faces",
+            vertex_count_before_incremental, face_count_before_incremental
+        );
     }
-    println!("Final:    {} vertices, {} faces", vertex_count_final, face_count_final);
+    println!(
+        "Final:    {} vertices, {} faces",
+        vertex_count_final, face_count_final
+    );
 
     println!("\nWriting output to {:?}...", output);
-    write_to_file(&mesh, output)
-        .map_err(|e| format!("Failed to write mesh: {:?}", e))?;
+    write_to_file(&mesh, output).map_err(|e| format!("Failed to write mesh: {:?}", e))?;
 
     println!("Done!");
     Ok(())
 }
 
-fn remesh_voxel(input: &PathBuf, output: &PathBuf, mesh_name: Option<&str>, voxel_size: f32, method: VoxelMethod) -> Result<(), Box<dyn std::error::Error>> {
-    use baby_shark::remeshing::voxel::{VoxelRemesher, MeshingMethod};
+fn remesh_voxel(
+    input: &PathBuf,
+    output: &PathBuf,
+    mesh_name: Option<&str>,
+    voxel_size: f32,
+    method: VoxelMethod,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use baby_shark::remeshing::voxel::{MeshingMethod, VoxelRemesher};
 
     println!("Loading mesh from {:?}...", input);
     let mesh = load_mesh(input, mesh_name)?;
@@ -484,8 +594,14 @@ fn remesh_voxel(input: &PathBuf, output: &PathBuf, mesh_name: Option<&str>, voxe
     let vertex_count_before = mesh.count_vertices();
     let face_count_before = mesh.count_faces();
 
-    println!("Before remeshing: {} vertices, {} faces", vertex_count_before, face_count_before);
-    println!("Voxel remeshing with method: {:?}, voxel size: {}", method, voxel_size);
+    println!(
+        "Before remeshing: {} vertices, {} faces",
+        vertex_count_before, face_count_before
+    );
+    println!(
+        "Voxel remeshing with method: {:?}, voxel size: {}",
+        method, voxel_size
+    );
 
     let meshing_method = match method {
         VoxelMethod::FeaturePreserving => MeshingMethod::FeaturePreserving,
@@ -496,13 +612,15 @@ fn remesh_voxel(input: &PathBuf, output: &PathBuf, mesh_name: Option<&str>, voxe
         .with_voxel_size(voxel_size)
         .with_meshing_method(meshing_method);
 
-    let remeshed_mesh = remesher.remesh(&mesh)
-        .ok_or("Voxel remeshing failed")?;
+    let remeshed_mesh = remesher.remesh(&mesh).ok_or("Voxel remeshing failed")?;
 
     let vertex_count_after = remeshed_mesh.count_vertices();
     let face_count_after = remeshed_mesh.count_faces();
 
-    println!("After remeshing: {} vertices, {} faces", vertex_count_after, face_count_after);
+    println!(
+        "After remeshing: {} vertices, {} faces",
+        vertex_count_after, face_count_after
+    );
 
     // Check manifold status if using Manifold method
     if matches!(method, VoxelMethod::Manifold) {
@@ -510,14 +628,16 @@ fn remesh_voxel(input: &PathBuf, output: &PathBuf, mesh_name: Option<&str>, voxe
         if boundary_rings.is_empty() {
             println!("✓ Output mesh is manifold (watertight)");
         } else {
-            println!("⚠ Warning: {} boundary ring(s) detected", boundary_rings.len());
+            println!(
+                "⚠ Warning: {} boundary ring(s) detected",
+                boundary_rings.len()
+            );
         }
     }
 
     println!("Writing output to {:?}...", output);
     use baby_shark::io::write_to_file;
-    write_to_file(&remeshed_mesh, output)
-        .map_err(|e| format!("Failed to write mesh: {:?}", e))?;
+    write_to_file(&remeshed_mesh, output).map_err(|e| format!("Failed to write mesh: {:?}", e))?;
 
     println!("Done!");
     Ok(())
@@ -568,10 +688,10 @@ fn show_stats(input: &PathBuf, mesh_name: Option<&str>) -> Result<(), Box<dyn st
 
 fn view_mesh(input: &PathBuf, mesh_name: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     use kiss3d::light::Light;
-    use kiss3d::window::Window;
     use kiss3d::nalgebra as na;
-    use std::rc::Rc;
+    use kiss3d::window::Window;
     use std::cell::RefCell;
+    use std::rc::Rc;
 
     println!("Loading mesh from {:?}...", input);
 
@@ -583,8 +703,7 @@ fn view_mesh(input: &PathBuf, mesh_name: Option<&str>) -> Result<(), Box<dyn std
     println!("Converting to OBJ format...");
 
     use baby_shark::io::write_to_file;
-    write_to_file(&mesh, &temp_obj)
-        .map_err(|e| format!("Failed to write temp mesh: {:?}", e))?;
+    write_to_file(&mesh, &temp_obj).map_err(|e| format!("Failed to write temp mesh: {:?}", e))?;
 
     // Calculate bounding box to center and scale the mesh
     let mut min = [f32::INFINITY, f32::INFINITY, f32::INFINITY];
@@ -606,17 +725,18 @@ fn view_mesh(input: &PathBuf, mesh_name: Option<&str>) -> Result<(), Box<dyn std
         (min[2] + max[2]) / 2.0,
     ];
 
-    let size = [
-        max[0] - min[0],
-        max[1] - min[1],
-        max[2] - min[2],
-    ];
+    let size = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
 
     let max_dimension = size[0].max(size[1]).max(size[2]);
 
-    println!("Mesh bounds: ({:.3}, {:.3}, {:.3}) to ({:.3}, {:.3}, {:.3})",
-             min[0], min[1], min[2], max[0], max[1], max[2]);
-    println!("Mesh center: ({:.3}, {:.3}, {:.3})", center[0], center[1], center[2]);
+    println!(
+        "Mesh bounds: ({:.3}, {:.3}, {:.3}) to ({:.3}, {:.3}, {:.3})",
+        min[0], min[1], min[2], max[0], max[1], max[2]
+    );
+    println!(
+        "Mesh center: ({:.3}, {:.3}, {:.3})",
+        center[0], center[1], center[2]
+    );
     println!("Mesh size: {:.3}", max_dimension);
 
     // Extract as triangle soup (no vertex sharing) to avoid any indexing issues
@@ -655,7 +775,18 @@ fn view_mesh(input: &PathBuf, mesh_name: Option<&str>) -> Result<(), Box<dyn std
         vertex_idx += 3;
     }
 
-    println!("Extracted {} vertices ({} triangles) as triangle soup", vertices.len(), indices.len());
+    println!(
+        "Extracted {} vertices ({} triangles) as triangle soup",
+        vertices.len(),
+        indices.len()
+    );
+
+    // Calculate mesh statistics for overlay
+    let vertex_count = mesh.count_vertices();
+    let face_count = mesh.count_faces();
+    let edge_count = mesh.unique_edges().count();
+    let boundary_rings = mesh.boundary_rings();
+    let is_manifold = boundary_rings.is_empty();
 
     // Create reversed mesh for backface visualization (flip winding)
     let mut reversed_indices: Vec<na::Point3<u32>> = Vec::new();
@@ -669,17 +800,18 @@ fn view_mesh(input: &PathBuf, mesh_name: Option<&str>) -> Result<(), Box<dyn std
     window.set_light(Light::StickToCamera);
 
     // Main mesh (front faces)
-    let mesh_rc = Rc::new(RefCell::new(
-        kiss3d::resource::Mesh::new(vertices.clone(), indices, None, None, false)
-    ));
+    let mesh_rc = Rc::new(RefCell::new(kiss3d::resource::Mesh::new(
+        vertices.clone(),
+        indices,
+        None,
+        None,
+        false,
+    )));
 
-    let mut mesh_obj = window.add_mesh(
-        mesh_rc,
-        na::Vector3::new(1.0, 1.0, 1.0),
-    );
+    let mut mesh_obj = window.add_mesh(mesh_rc, na::Vector3::new(1.0, 1.0, 1.0));
 
     mesh_obj.set_color(0.8, 0.8, 0.8);
-    mesh_obj.enable_backface_culling(true);  // Always cull backfaces on main mesh
+    mesh_obj.enable_backface_culling(true); // Always cull backfaces on main mesh
 
     // Enable wireframe overlay by default (surfaces + black edges)
     mesh_obj.set_lines_width(1.0);
@@ -687,27 +819,32 @@ fn view_mesh(input: &PathBuf, mesh_name: Option<&str>) -> Result<(), Box<dyn std
     mesh_obj.set_surface_rendering_activation(true);
 
     // Backface mesh (reversed, red) - hidden by default
-    let backface_mesh_rc = Rc::new(RefCell::new(
-        kiss3d::resource::Mesh::new(vertices, reversed_indices, None, None, false)
-    ));
+    let backface_mesh_rc = Rc::new(RefCell::new(kiss3d::resource::Mesh::new(
+        vertices,
+        reversed_indices,
+        None,
+        None,
+        false,
+    )));
 
-    let mut backface_obj = window.add_mesh(
-        backface_mesh_rc,
-        na::Vector3::new(1.0, 1.0, 1.0),
-    );
+    let mut backface_obj = window.add_mesh(backface_mesh_rc, na::Vector3::new(1.0, 1.0, 1.0));
 
-    backface_obj.set_color(1.0, 0.0, 0.0);  // Red
-    backface_obj.enable_backface_culling(true);  // Cull backfaces on reversed mesh too
-    backface_obj.set_visible(false);  // Hidden by default
+    backface_obj.set_color(1.0, 0.0, 0.0); // Red
+    backface_obj.enable_backface_culling(true); // Cull backfaces on reversed mesh too
+    backface_obj.set_visible(false); // Hidden by default
 
     // Set camera to look at the centered mesh from a good distance
     let camera_distance = max_dimension * 2.5;
-    let eye = na::Point3::new(camera_distance * 0.5, camera_distance * 0.3, camera_distance);
+    let eye = na::Point3::new(
+        camera_distance * 0.5,
+        camera_distance * 0.3,
+        camera_distance,
+    );
     let at = na::Point3::new(0.0, 0.0, 0.0);
     let mut arc_ball = kiss3d::camera::ArcBall::new(eye, at);
 
     // State for interactive controls
-    let mut show_wireframe = true;  // On by default
+    let mut show_wireframe = true; // On by default
     let mut show_backfaces = false;
 
     println!("Viewing mesh...");
@@ -717,9 +854,144 @@ fn view_mesh(input: &PathBuf, mesh_name: Option<&str>) -> Result<(), Box<dyn std
     println!("  Q/ESC: Exit");
     println!("Wireframe: ON (default)");
 
-    use kiss3d::event::{Key, Action};
+    use kiss3d::event::{Action, Key};
+    use kiss3d::text::Font;
+
+    // Load font for text rendering (use built-in font)
+    let font = Font::default();
 
     while window.render_with_camera(&mut arc_ball) {
+        // Draw controls overlay
+        let x_offset = 11.0;
+        let y_offset = 15.0;
+        let line_height = 18.0;
+        let header_size = 26.0;
+        let text_size = 18.0;
+        let header_padding = 8.0; // Extra padding after headers
+
+        // Headers use lighter gray for a "thinner" appearance
+        let header_color = na::Point3::new(0.8, 0.8, 0.8);
+        let text_color = na::Point3::new(0.9, 0.9, 0.9);
+
+        window.draw_text(
+            "Controls",
+            &na::Point2::new(x_offset - 1.0, y_offset),
+            header_size,
+            &font,
+            &header_color,
+        );
+        let mut current_y = y_offset + line_height + header_padding;
+
+        window.draw_text(
+            "Left Click+Drag: Rotate",
+            &na::Point2::new(x_offset, current_y),
+            text_size,
+            &font,
+            &text_color,
+        );
+        current_y += line_height;
+
+        window.draw_text(
+            "Right Click+Drag: Pan",
+            &na::Point2::new(x_offset, current_y),
+            text_size,
+            &font,
+            &text_color,
+        );
+        current_y += line_height;
+
+        window.draw_text(
+            "Scroll: Zoom",
+            &na::Point2::new(x_offset, current_y),
+            text_size,
+            &font,
+            &text_color,
+        );
+        current_y += line_height;
+
+        window.draw_text(
+            "W: Toggle Wireframe",
+            &na::Point2::new(x_offset, current_y),
+            text_size,
+            &font,
+            &text_color,
+        );
+        current_y += line_height;
+
+        window.draw_text(
+            "B: Toggle Backfaces",
+            &na::Point2::new(x_offset, current_y),
+            text_size,
+            &font,
+            &text_color,
+        );
+        current_y += line_height;
+
+        window.draw_text(
+            "Q/ESC: Exit",
+            &na::Point2::new(x_offset, current_y),
+            text_size,
+            &font,
+            &text_color,
+        );
+
+        // Draw mesh statistics
+        current_y += line_height * 2.0;
+        window.draw_text(
+            "Mesh Info",
+            &na::Point2::new(x_offset - 1.0, current_y),
+            header_size,
+            &font,
+            &header_color,
+        );
+        current_y += line_height + header_padding;
+
+        window.draw_text(
+            &format!("Vertices: {}", vertex_count),
+            &na::Point2::new(x_offset, current_y),
+            text_size,
+            &font,
+            &text_color,
+        );
+        current_y += line_height;
+
+        window.draw_text(
+            &format!("Edges: {}", edge_count),
+            &na::Point2::new(x_offset, current_y),
+            text_size,
+            &font,
+            &text_color,
+        );
+        current_y += line_height;
+
+        window.draw_text(
+            &format!("Faces: {}", face_count),
+            &na::Point2::new(x_offset, current_y),
+            text_size,
+            &font,
+            &text_color,
+        );
+        current_y += line_height;
+
+        // Manifold status with color
+        let manifold_text = if is_manifold {
+            "Manifold: Yes".to_string()
+        } else {
+            format!("Manifold: No ({} holes)", boundary_rings.len())
+        };
+        let manifold_color = if is_manifold {
+            na::Point3::new(0.4, 1.0, 0.4) // Bright green
+        } else {
+            na::Point3::new(1.0, 0.4, 0.4) // Bright red
+        };
+        window.draw_text(
+            &manifold_text,
+            &na::Point2::new(10.0, current_y),
+            text_size,
+            &font,
+            &manifold_color,
+        );
+
         // Handle keyboard input
         for event in window.events().iter() {
             match event.value {
@@ -736,10 +1008,13 @@ fn view_mesh(input: &PathBuf, mesh_name: Option<&str>) -> Result<(), Box<dyn std
                 kiss3d::event::WindowEvent::Key(Key::B, Action::Press, _) => {
                     show_backfaces = !show_backfaces;
                     backface_obj.set_visible(show_backfaces);
-                    println!("Backface visualization: {}", if show_backfaces { "ON (red)" } else { "OFF" });
+                    println!(
+                        "Backface visualization: {}",
+                        if show_backfaces { "ON (red)" } else { "OFF" }
+                    );
                 }
-                kiss3d::event::WindowEvent::Key(Key::Q, Action::Press, _) |
-                kiss3d::event::WindowEvent::Key(Key::Escape, Action::Press, _) => {
+                kiss3d::event::WindowEvent::Key(Key::Q, Action::Press, _)
+                | kiss3d::event::WindowEvent::Key(Key::Escape, Action::Press, _) => {
                     return Ok(());
                 }
                 _ => {}
@@ -750,7 +1025,10 @@ fn view_mesh(input: &PathBuf, mesh_name: Option<&str>) -> Result<(), Box<dyn std
     Ok(())
 }
 
-fn check_manifold(input: &PathBuf, mesh_name: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+fn check_manifold(
+    input: &PathBuf,
+    mesh_name: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     println!("Loading mesh from {:?}...", input);
     let mesh = load_mesh(input, mesh_name)?;
 
@@ -765,7 +1043,10 @@ fn check_manifold(input: &PathBuf, mesh_name: Option<&str>) -> Result<(), Box<dy
         println!("  No holes or boundaries detected.");
     } else {
         println!("✗ Mesh is NOT MANIFOLD");
-        println!("  Found {} boundary ring(s) (holes):\n", boundary_rings.len());
+        println!(
+            "  Found {} boundary ring(s) (holes):\n",
+            boundary_rings.len()
+        );
 
         for (i, ring) in boundary_rings.iter().enumerate() {
             let mut edge_count = 0;
@@ -790,8 +1071,8 @@ fn merge_close_vertices(
     tolerance: f32,
 ) -> Result<baby_shark::mesh::corner_table::CornerTableF, Box<dyn std::error::Error>> {
     use baby_shark::algo::merge_points::merge_points;
-    use baby_shark::io::{Builder, IndexedBuilder};
     use baby_shark::exports::nalgebra::Vector3;
+    use baby_shark::io::{Builder, IndexedBuilder};
 
     println!("Merging vertices with tolerance: {}", tolerance);
 
@@ -799,7 +1080,8 @@ fn merge_close_vertices(
 
     // Extract all vertex positions and build a VertexId -> index mapping
     let mut positions: Vec<[f32; 3]> = Vec::new();
-    let mut vertex_id_to_idx: std::collections::HashMap<_, usize> = std::collections::HashMap::new();
+    let mut vertex_id_to_idx: std::collections::HashMap<_, usize> =
+        std::collections::HashMap::new();
 
     for (idx, vertex_id) in mesh.vertices().enumerate() {
         let pos = mesh.vertex_position(vertex_id);
@@ -823,8 +1105,11 @@ fn merge_close_vertices(
     // Merge quantized vertices
     let merged = merge_points(quantized_positions.into_iter());
 
-    println!("Merged {} vertices into {} unique vertices",
-             vertex_count_before, merged.points.len());
+    println!(
+        "Merged {} vertices into {} unique vertices",
+        vertex_count_before,
+        merged.points.len()
+    );
 
     // Build vertex mapping: old vertex array index -> new vertex index
     let vertex_map: Vec<usize> = merged.indices;
@@ -834,7 +1119,8 @@ fn merge_close_vertices(
     builder.set_num_vertices(merged.points.len());
 
     for point in &merged.points {
-        builder.add_vertex([point.x, point.y, point.z])
+        builder
+            .add_vertex([point.x, point.y, point.z])
             .map_err(|e| format!("Failed to add vertex: {:?}", e))?;
     }
 
@@ -860,12 +1146,20 @@ fn merge_close_vertices(
         }
     }
 
-    builder.finish()
+    builder
+        .finish()
         .map_err(|e| format!("Failed to build merged mesh: {:?}", e).into())
 }
 
-fn fix_holes(input: &PathBuf, output: &PathBuf, mesh_name: Option<&str>, voxel_size: f32, tolerance: f32, no_merge: bool) -> Result<(), Box<dyn std::error::Error>> {
-    use baby_shark::remeshing::voxel::{VoxelRemesher, MeshingMethod};
+fn fix_holes(
+    input: &PathBuf,
+    output: &PathBuf,
+    mesh_name: Option<&str>,
+    voxel_size: f32,
+    tolerance: f32,
+    no_merge: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use baby_shark::remeshing::voxel::{MeshingMethod, VoxelRemesher};
 
     println!("Loading mesh from {:?}...", input);
     let mut mesh = load_mesh(input, mesh_name)?;
@@ -873,12 +1167,19 @@ fn fix_holes(input: &PathBuf, output: &PathBuf, mesh_name: Option<&str>, voxel_s
     let vertex_count_initial = mesh.count_vertices();
     let face_count_initial = mesh.count_faces();
 
-    println!("Initial: {} vertices, {} faces", vertex_count_initial, face_count_initial);
+    println!(
+        "Initial: {} vertices, {} faces",
+        vertex_count_initial, face_count_initial
+    );
 
     // Merge close vertices first (unless disabled)
     if !no_merge {
         mesh = merge_close_vertices(&mesh, tolerance)?;
-        println!("After merging: {} vertices, {} faces", mesh.count_vertices(), mesh.count_faces());
+        println!(
+            "After merging: {} vertices, {} faces",
+            mesh.count_vertices(),
+            mesh.count_faces()
+        );
     }
 
     // Check if mesh needs fixing
@@ -890,8 +1191,7 @@ fn fix_holes(input: &PathBuf, output: &PathBuf, mesh_name: Option<&str>, voxel_s
         if !no_merge && mesh.count_vertices() < vertex_count_initial {
             println!("Writing merged mesh to {:?}...", output);
             use baby_shark::io::write_to_file;
-            write_to_file(&mesh, output)
-                .map_err(|e| format!("Failed to write mesh: {:?}", e))?;
+            write_to_file(&mesh, output).map_err(|e| format!("Failed to write mesh: {:?}", e))?;
             println!("Done!");
         }
 
@@ -907,26 +1207,30 @@ fn fix_holes(input: &PathBuf, output: &PathBuf, mesh_name: Option<&str>, voxel_s
         .with_voxel_size(voxel_size)
         .with_meshing_method(MeshingMethod::Manifold);
 
-    let fixed_mesh = remesher.remesh(&mesh)
-        .ok_or("Voxel remeshing failed")?;
+    let fixed_mesh = remesher.remesh(&mesh).ok_or("Voxel remeshing failed")?;
 
     let vertex_count_after = fixed_mesh.count_vertices();
     let face_count_after = fixed_mesh.count_faces();
 
-    println!("After: {} vertices, {} faces", vertex_count_after, face_count_after);
+    println!(
+        "After: {} vertices, {} faces",
+        vertex_count_after, face_count_after
+    );
 
     // Verify the result
     let boundary_rings_after = fixed_mesh.boundary_rings();
     if boundary_rings_after.is_empty() {
         println!("✓ Mesh is now manifold!");
     } else {
-        println!("⚠ Warning: {} hole(s) remain (may need smaller voxel size)", boundary_rings_after.len());
+        println!(
+            "⚠ Warning: {} hole(s) remain (may need smaller voxel size)",
+            boundary_rings_after.len()
+        );
     }
 
     println!("Writing output to {:?}...", output);
     use baby_shark::io::write_to_file;
-    write_to_file(&fixed_mesh, output)
-        .map_err(|e| format!("Failed to write mesh: {:?}", e))?;
+    write_to_file(&fixed_mesh, output).map_err(|e| format!("Failed to write mesh: {:?}", e))?;
 
     println!("Done!");
     Ok(())
