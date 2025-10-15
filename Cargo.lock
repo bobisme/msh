@@ -1685,7 +1685,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "msh"
+name = "mshmash"
 version = "0.1.0"
 dependencies = [
  "baby_shark",
