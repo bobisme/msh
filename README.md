@@ -120,6 +120,28 @@ msh fix damaged.obj --out fixed.obj
   fixing (default: 0.0001)
 - `--no-merge`: Skip vertex merging step
 
+### Inspect GLB/glTF Files
+
+Display the structure and contents of a GLB or glTF file:
+
+```bash
+msh inspect-glb <INPUT>
+msh inspect-glb scene.glb
+msh inspect-glb model.glb --json  # Output as JSON
+```
+
+This command shows the scene hierarchy, including:
+
+- Scene structure and node tree
+- Transform data (position, rotation, scale)
+- Mesh information (name, primitive count)
+- Custom properties (extras)
+- Cameras and other components
+
+**Options:**
+
+- `--json`: Output as JSON instead of tree format
+
 ## Supported Formats
 
 - **Input:** `.obj`, `.glb`
