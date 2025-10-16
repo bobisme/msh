@@ -1692,6 +1692,7 @@ dependencies = [
  "clap",
  "gltf",
  "kiss3d",
+ "serde_json",
 ]
 
 [[package]]
