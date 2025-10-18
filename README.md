@@ -174,3 +174,206 @@ msh view original.obj
 msh remesh original.obj --out fixed.obj
 msh view fixed.obj
 ```
+
+## Remote Control & RenderDoc Features
+
+### Remote Control (Feature: `remote`)
+
+Control the mesh viewer remotely via JSON-RPC. Perfect for automated workflows, scripting, or external tool integration.
+
+#### Enable Remote Control
+
+Start the viewer with remote control enabled:
+
+```bash
+# Build with remote feature
+cargo build --features remote
+
+# Start viewer with RPC server
+msh view model.obj --remote
+```
+
+The viewer will start a JSON-RPC server on `http://127.0.0.1:9001` and display:
+```
+✓ RPC server ready at http://127.0.0.1:9001
+  Available methods:
+    - load_model(path, mesh_name?)
+    - set_rotation(x, y, z)
+    - rotate_around_axis(axis, angle)
+    ...
+```
+
+#### Remote Commands
+
+Control the running viewer from another terminal:
+
+**Load a Model**
+```bash
+msh remote load path/to/model.obj
+msh remote load scene.glb --mesh "Body"
+```
+
+**Rotate the Model**
+```bash
+# Set absolute rotation (Euler angles in radians)
+msh remote rotate 0 1.57 0
+
+# Rotate around axis with angle notation
+msh remote rotate-axis 0,1,0 90d    # 90 degrees around Y axis
+msh remote rotate-axis 1,0,0 1.57r  # 1.57 radians around X axis
+```
+
+**Control Camera**
+```bash
+# Set camera position
+msh remote camera-pos 5.0 3.0 5.0
+
+# Set camera target (look-at point)
+msh remote camera-target 0 0 0
+```
+
+**Toggle Display Options**
+```bash
+# Wireframe
+msh remote enable-wireframe
+msh remote disable-wireframe
+msh remote toggle-wireframe
+
+# Backface visualization (shows red reversed faces)
+msh remote enable-backfaces
+msh remote disable-backfaces
+msh remote toggle-backfaces
+
+# UI overlay
+msh remote enable-ui
+msh remote disable-ui
+msh remote toggle-ui
+```
+
+**Get Mesh Statistics**
+```bash
+msh remote stats
+```
+Output:
+```
+=== Mesh Statistics ===
+Vertices:  1234
+Edges:     3702
+Faces:     2468
+Manifold:  Yes
+```
+
+**Capture Frame (RenderDoc)**
+```bash
+msh remote capture
+msh remote capture /path/to/save.rdc
+```
+
+### RenderDoc Integration (Feature: `renderdoc`)
+
+Capture GPU frames for debugging and analysis using RenderDoc.
+
+#### Build with RenderDoc Support
+
+```bash
+cargo build --features renderdoc
+# or with both features
+cargo build --features remote,renderdoc
+```
+
+#### Capture Frames
+
+**Launch with RenderDoc:**
+```bash
+# Build with RenderDoc support
+cargo build --features renderdoc --release
+
+# Launch through RenderDoc
+renderdoccmd ./target/release/msh view model.obj
+# or
+qrenderdoc  # Then use GUI: File -> Launch Application
+```
+
+When launched through RenderDoc, F12 will capture frames (injected by RenderDoc).
+
+**Via Remote Control:**
+```bash
+# Terminal 1: Launch with both features
+cargo build --features remote,renderdoc --release
+renderdoccmd ./target/release/msh view model.obj --remote
+
+# Terminal 2: Trigger capture remotely
+msh remote capture
+```
+
+**Note:** RenderDoc works by injecting itself into your application process. The app must be launched through RenderDoc (via `renderdoccmd` or the RenderDoc GUI) for frame capture to work.
+
+### Angle Notation
+
+The remote control system supports flexible angle notation:
+
+- **Degrees**: `90d`, `180d`, `45d`, `-90d`
+- **Radians**: `1.57r`, `3.14r`, `0.785r`
+- **No unit** (interpreted as radians): `1.57`, `3.14`
+
+Examples:
+```bash
+msh remote rotate-axis 0,1,0 90d      # Quarter turn
+msh remote rotate-axis 1,0,0 180d    # Half turn
+msh remote rotate-axis 0,0,1 1.57r   # ~90° in radians
+```
+
+### Example Workflow: Automated Inspection
+
+```bash
+# Terminal 1: Start viewer with remote control and RenderDoc
+renderdoccmd msh view model.obj --remote
+
+# Terminal 2: Automate inspection
+msh remote rotate 0 0 0              # Reset rotation
+msh remote camera-pos 10 5 10        # Position camera
+msh remote enable-wireframe          # Show wireframe
+msh remote rotate-axis 0,1,0 45d    # Rotate 45° around Y
+msh remote capture                   # Trigger RenderDoc capture
+
+msh remote rotate-axis 0,1,0 90d    # Rotate another 90°
+msh remote capture                   # Capture another frame
+
+msh remote stats                     # Get mesh info
+```
+
+**Note:** Launch with `renderdoccmd` to enable frame capture. Without it, `msh remote capture` will report that RenderDoc is not available.
+
+### JSON-RPC API
+
+The RPC server implements JSON-RPC 2.0 over HTTP. You can also call methods directly:
+
+```bash
+curl -X POST http://127.0.0.1:9001 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"set_rotation","params":[0,1.57,0],"id":1}'
+```
+
+Available methods:
+- `load_model(path: String, mesh_name: Option<String>)`
+- `set_rotation(x: f32, y: f32, z: f32)`
+- `rotate_around_axis(axis: Vec<f32>, angle: String)`
+- `set_camera_position(x: f32, y: f32, z: f32)`
+- `set_camera_target(x: f32, y: f32, z: f32)`
+- `enable_wireframe()` / `disable_wireframe()` / `toggle_wireframe()`
+- `enable_backfaces()` / `disable_backfaces()` / `toggle_backfaces()`
+- `enable_ui()` / `disable_ui()` / `toggle_ui()`
+- `get_stats()` → `{vertices, edges, faces, is_manifold, holes}`
+- `capture_frame(path: Option<String>)` (requires `renderdoc` feature)
+
+## Feature Flags
+
+- **`remote`**: Enables JSON-RPC server and remote control CLI
+  - Dependencies: jsonrpsee, tokio, crossbeam
+  - Build: `cargo build --features remote`
+
+- **`renderdoc`**: Enables RenderDoc frame capture
+  - Dependencies: renderdoc crate
+  - Build: `cargo build --features renderdoc`
+
+- **Both**: `cargo build --features remote,renderdoc`
