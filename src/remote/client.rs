@@ -168,3 +168,14 @@ pub async fn capture_frame(
         .await?;
     Ok(response)
 }
+
+#[cfg(feature = "remote")]
+pub async fn screenshot(
+    client: &HttpClient,
+    path: String,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let response: String = client
+        .request("screenshot", (path,))
+        .await?;
+    Ok(response)
+}

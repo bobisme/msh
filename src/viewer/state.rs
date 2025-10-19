@@ -79,6 +79,10 @@ pub enum ViewerCommand {
     CaptureFrame {
         path: Option<String>,
     },
+    /// Take a screenshot (save to PNG)
+    Screenshot {
+        path: String,
+    },
 }
 
 impl ViewerState {

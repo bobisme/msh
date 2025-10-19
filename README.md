@@ -263,6 +263,13 @@ Faces:     2468
 Manifold:  Yes
 ```
 
+**Take Screenshot**
+```bash
+msh remote screenshot output.png
+msh remote screenshot captures/view.png    # Creates 'captures' dir if needed
+msh remote screenshot deep/nested/dirs/shot.png  # Creates all parent dirs
+```
+
 **Capture Frame (RenderDoc)**
 ```bash
 msh remote capture
@@ -303,8 +310,15 @@ cargo build --features remote,renderdoc --release
 renderdoccmd ./target/release/msh view model.obj --remote
 
 # Terminal 2: Trigger capture remotely
-msh remote capture
+msh remote capture                               # Default RenderDoc location
+msh remote capture "captures/my_mesh"            # Relative to your current directory
+msh remote capture "/tmp/debug/mesh_analysis"    # Absolute path
 ```
+
+The path parameter sets RenderDoc's capture file path template:
+- **Relative paths** are resolved from your current working directory (where you run `msh remote`)
+- **Absolute paths** are used as-is
+- RenderDoc appends a timestamp and `.rdc` extension to the final file
 
 **Note:** RenderDoc works by injecting itself into your application process. The app must be launched through RenderDoc (via `renderdoccmd` or the RenderDoc GUI) for frame capture to work.
 
@@ -326,23 +340,39 @@ msh remote rotate-axis 0,0,1 1.57r   # ~90° in radians
 ### Example Workflow: Automated Inspection
 
 ```bash
-# Terminal 1: Start viewer with remote control and RenderDoc
-renderdoccmd msh view model.obj --remote
+# Terminal 1: Start viewer with remote control
+msh view model.obj --remote
 
-# Terminal 2: Automate inspection
-msh remote rotate 0 0 0              # Reset rotation
-msh remote camera-pos 10 5 10        # Position camera
-msh remote enable-wireframe          # Show wireframe
-msh remote rotate-axis 0,1,0 45d    # Rotate 45° around Y
-msh remote capture                   # Trigger RenderDoc capture
+# Terminal 2: Automate inspection with screenshots
+msh remote rotate 0 0 0                     # Reset rotation
+msh remote camera-pos 10 5 10               # Position camera
+msh remote enable-wireframe                 # Show wireframe
+msh remote rotate-axis 0,1,0 45d           # Rotate 45° around Y
+msh remote screenshot "shots/front_view.png"  # Take screenshot
 
-msh remote rotate-axis 0,1,0 90d    # Rotate another 90°
-msh remote capture                   # Capture another frame
+msh remote rotate-axis 0,1,0 90d           # Rotate another 90°
+msh remote screenshot "shots/side_view.png"   # Another screenshot
 
-msh remote stats                     # Get mesh info
+msh remote disable-wireframe                # Toggle for comparison
+msh remote screenshot "shots/side_shaded.png"
+
+msh remote stats                            # Get mesh info
 ```
 
-**Note:** Launch with `renderdoccmd` to enable frame capture. Without it, `msh remote capture` will report that RenderDoc is not available.
+**With RenderDoc for GPU debugging:**
+```bash
+# Terminal 1: Start with RenderDoc
+renderdoccmd msh view model.obj --remote
+
+# Terminal 2: Mix screenshots and RenderDoc captures
+msh remote screenshot "analysis/mesh.png"        # High-level view (PNG)
+msh remote capture "analysis/mesh"               # GPU-level capture (.rdc)
+```
+
+**Note:**
+- Launch with `renderdoccmd` to enable frame capture. Without it, `msh remote capture` will report that RenderDoc is not available.
+- Relative paths are resolved from your current directory, so if you're in `/home/user/projects/models/`, the path `"captures/front_view.png"` becomes `/home/user/projects/models/captures/front_view.png`.
+- Parent directories are automatically created for screenshots, so `"output/shots/view.png"` will create the `output/shots/` directory structure if it doesn't exist.
 
 ### JSON-RPC API
 
@@ -364,6 +394,7 @@ Available methods:
 - `enable_backfaces()` / `disable_backfaces()` / `toggle_backfaces()`
 - `enable_ui()` / `disable_ui()` / `toggle_ui()`
 - `get_stats()` → `{vertices, edges, faces, is_manifold, holes}`
+- `screenshot(path: String)` - Save current view as PNG
 - `capture_frame(path: Option<String>)` (requires `renderdoc` feature)
 
 ## Feature Flags

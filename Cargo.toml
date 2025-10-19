@@ -24,6 +24,7 @@ gltf = { version = "1.4.1", features = ["extras", "names"] }
 kiss3d = { version = "0.36.0", features = ["vertex_index_u32"] }
 serde_json = "1.0.145"
 serde = { version = "1.0", features = ["derive"] }
+image = "0.25"
 
 # Remote control dependencies (feature-gated)
 jsonrpsee = { version = "0.24", features = ["http-client", "server", "macros"], optional = true }

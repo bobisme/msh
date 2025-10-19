@@ -78,6 +78,10 @@ pub trait ViewerRpc {
     /// Capture frame (RenderDoc)
     #[method(name = "capture_frame")]
     async fn capture_frame(&self, path: Option<String>) -> Result<String, ErrorObjectOwned>;
+
+    /// Take a screenshot (save to PNG)
+    #[method(name = "screenshot")]
+    async fn screenshot(&self, path: String) -> Result<String, ErrorObjectOwned>;
 }
 
 #[cfg(feature = "remote")]
@@ -278,5 +282,18 @@ impl ViewerRpcServer for ViewerRpcImpl {
                 Some("Rebuild with --features renderdoc to use frame capture")
             ))
         }
+    }
+
+    async fn screenshot(&self, path: String) -> Result<String, ErrorObjectOwned> {
+        let cmd = ViewerCommand::Screenshot { path: path.clone() };
+
+        self.command_tx.send(cmd)
+            .map_err(|e| ErrorObjectOwned::owned(
+                -32000,
+                "Failed to send command to viewer",
+                Some(e.to_string())
+            ))?;
+
+        Ok(format!("Screenshot will be saved to: {}", path))
     }
 }

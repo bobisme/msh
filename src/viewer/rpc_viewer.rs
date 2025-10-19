@@ -286,11 +286,23 @@ fn run_viewer_with_commands(
                 }
                 #[cfg(feature = "renderdoc")]
                 ViewerCommand::CaptureFrame { path } => {
-                    renderdoc.trigger_capture();
-                    if let Some(p) = path {
-                        println!("Frame capture triggered (path hint: {})", p);
-                    } else {
-                        println!("Frame capture triggered");
+                    renderdoc.trigger_capture(path.as_deref());
+                }
+                ViewerCommand::Screenshot { path } => {
+                    // Create parent directories if they don't exist
+                    if let Some(parent) = std::path::Path::new(&path).parent() {
+                        if !parent.as_os_str().is_empty() {
+                            if let Err(e) = std::fs::create_dir_all(parent) {
+                                eprintln!("❌ Failed to create directory {}: {}", parent.display(), e);
+                                continue;
+                            }
+                        }
+                    }
+
+                    let img = window.snap_image();
+                    match img.save(&path) {
+                        Ok(_) => println!("📸 Screenshot saved to: {}", path),
+                        Err(e) => eprintln!("❌ Failed to save screenshot: {}", e),
                     }
                 }
             }

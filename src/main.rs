@@ -286,6 +286,12 @@ enum RemoteCommands {
         /// Output path for capture
         path: Option<String>,
     },
+
+    /// Take a screenshot (save to PNG)
+    Screenshot {
+        /// Output path for screenshot (e.g., "screenshot.png")
+        path: String,
+    },
 }
 
 #[cfg(feature = "remote")]
@@ -552,7 +558,45 @@ fn handle_remote_command(command: RemoteCommands) {
                 Ok(())
             }
             RemoteCommands::Capture { path } => {
-                let response = client::capture_frame(&client, path).await?;
+                // Convert relative paths to absolute (relative to caller's cwd)
+                let absolute_path = if let Some(p) = &path {
+                    let path_buf = std::path::PathBuf::from(p);
+                    if path_buf.is_absolute() {
+                        println!("Using absolute path: {}", p);
+                        Some(p.clone())
+                    } else {
+                        // Make relative paths absolute based on caller's working directory
+                        let cwd = std::env::current_dir()
+                            .map_err(|e| format!("Failed to get current directory: {}", e))?;
+                        let abs = cwd.join(path_buf);
+                        let abs_str = abs.to_string_lossy().to_string();
+                        println!("Resolved relative path '{}' to: {}", p, abs_str);
+                        Some(abs_str)
+                    }
+                } else {
+                    None
+                };
+
+                let response = client::capture_frame(&client, absolute_path).await?;
+                println!("{}", response);
+                Ok(())
+            }
+            RemoteCommands::Screenshot { path } => {
+                // Convert relative paths to absolute (relative to caller's cwd)
+                let path_buf = std::path::PathBuf::from(&path);
+                let absolute_path = if path_buf.is_absolute() {
+                    println!("Using absolute path: {}", path);
+                    path.clone()
+                } else {
+                    let cwd = std::env::current_dir()
+                        .map_err(|e| format!("Failed to get current directory: {}", e))?;
+                    let abs = cwd.join(path_buf);
+                    let abs_str = abs.to_string_lossy().to_string();
+                    println!("Resolved relative path '{}' to: {}", path, abs_str);
+                    abs_str
+                };
+
+                let response = client::screenshot(&client, absolute_path).await?;
                 println!("{}", response);
                 Ok(())
             }
