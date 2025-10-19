@@ -10,7 +10,10 @@ use std::sync::Arc;
 
 use crate::mesh::loader::load_mesh;
 
-pub fn view_mesh(input: &PathBuf, mesh_name: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn view_mesh(
+    input: &PathBuf,
+    mesh_name: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     println!("Loading mesh from {:?}...", input);
 
     // Load mesh through baby_shark, export to temp OBJ, then load with kiss3d's OBJ loader
@@ -118,7 +121,7 @@ pub fn view_mesh(input: &PathBuf, mesh_name: Option<&str>) -> Result<(), Box<dyn
     window.set_light(Light::StickToCamera);
 
     // Main mesh (front faces)
-    let mesh_rc = Rc::new(RefCell::new(kiss3d::resource::Mesh::new(
+    let mesh_rc = Rc::new(RefCell::new(kiss3d::resource::GpuMesh::new(
         vertices.clone(),
         indices,
         None,
@@ -137,7 +140,7 @@ pub fn view_mesh(input: &PathBuf, mesh_name: Option<&str>) -> Result<(), Box<dyn
     mesh_obj.set_surface_rendering_activation(true);
 
     // Backface mesh (reversed, red) - hidden by default
-    let backface_mesh_rc = Rc::new(RefCell::new(kiss3d::resource::Mesh::new(
+    let backface_mesh_rc = Rc::new(RefCell::new(kiss3d::resource::GpuMesh::new(
         vertices,
         reversed_indices,
         None,
@@ -177,7 +180,7 @@ pub fn view_mesh(input: &PathBuf, mesh_name: Option<&str>) -> Result<(), Box<dyn
     // Load font for text rendering (use built-in font)
     let font = Arc::new(Font::default());
 
-    while window.render_with_camera(&mut arc_ball) {
+    while window.render_with_camera(&mut arc_ball).await {
         // Draw UI overlay only if enabled
         if show_ui {
             draw_ui_overlay(

@@ -20,14 +20,14 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "remote")]
+use super::state::{MeshStats, ViewerCommand, ViewerState};
+#[cfg(feature = "remote")]
 use crate::mesh::loader::load_mesh;
 #[cfg(feature = "remote")]
 use crate::rpc::spawn_rpc_server;
-#[cfg(feature = "remote")]
-use super::state::{MeshStats, ViewerCommand, ViewerState};
 
 #[cfg(feature = "remote")]
-pub fn view_mesh_with_rpc(
+pub async fn view_mesh_with_rpc(
     input: &PathBuf,
     mesh_name: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -80,13 +80,13 @@ pub fn view_mesh_with_rpc(
     let _rpc_handle = spawn_rpc_server(state_clone, command_tx, 9001);
 
     // Run viewer with command processing
-    run_viewer_with_commands(mesh, state, command_rx, max_dimension)?;
+    run_viewer_with_commands(mesh, state, command_rx, max_dimension).await?;
 
     Ok(())
 }
 
 #[cfg(feature = "remote")]
-fn run_viewer_with_commands(
+async fn run_viewer_with_commands(
     initial_mesh: baby_shark::mesh::corner_table::CornerTableF,
     state: Arc<Mutex<ViewerState>>,
     command_rx: Receiver<ViewerCommand>,
@@ -161,7 +161,7 @@ fn run_viewer_with_commands(
     window.set_light(Light::StickToCamera);
 
     // Main mesh
-    let mesh_rc = Rc::new(RefCell::new(kiss3d::resource::Mesh::new(
+    let mesh_rc = Rc::new(RefCell::new(kiss3d::resource::GpuMesh::new(
         vertices.clone(),
         indices,
         None,
@@ -177,7 +177,7 @@ fn run_viewer_with_commands(
     mesh_obj.set_surface_rendering_activation(true);
 
     // Backface mesh
-    let backface_mesh_rc = Rc::new(RefCell::new(kiss3d::resource::Mesh::new(
+    let backface_mesh_rc = Rc::new(RefCell::new(kiss3d::resource::GpuMesh::new(
         vertices,
         reversed_indices,
         None,
@@ -212,7 +212,7 @@ fn run_viewer_with_commands(
     println!("  U: Toggle UI");
     println!("  Q/ESC: Exit");
 
-    while window.render_with_camera(&mut arc_ball) {
+    while window.render_with_camera(&mut arc_ball).await {
         // Process RPC commands (non-blocking)
         while let Ok(cmd) = command_rx.try_recv() {
             match cmd {
@@ -237,7 +237,7 @@ fn run_viewer_with_commands(
                     println!("Rotated around axis {:?} by {} rad", axis, angle);
                 }
                 ViewerCommand::SetCameraPosition { position } => {
-                    arc_ball.set_at(arc_ball.at());  // Keep target same
+                    arc_ball.set_at(arc_ball.at()); // Keep target same
                     // Note: kiss3d's ArcBall doesn't expose set_eye directly,
                     // so we rebuild it
                     let target = arc_ball.at();
@@ -293,7 +293,11 @@ fn run_viewer_with_commands(
                     if let Some(parent) = std::path::Path::new(&path).parent() {
                         if !parent.as_os_str().is_empty() {
                             if let Err(e) = std::fs::create_dir_all(parent) {
-                                eprintln!("❌ Failed to create directory {}: {}", parent.display(), e);
+                                eprintln!(
+                                    "❌ Failed to create directory {}: {}",
+                                    parent.display(),
+                                    e
+                                );
                                 continue;
                             }
                         }
@@ -327,13 +331,19 @@ fn run_viewer_with_commands(
                     } else {
                         mesh_obj.set_lines_width(0.0);
                     }
-                    println!("Wireframe: {}", if st.show_wireframe { "ON" } else { "OFF" });
+                    println!(
+                        "Wireframe: {}",
+                        if st.show_wireframe { "ON" } else { "OFF" }
+                    );
                 }
                 kiss3d::event::WindowEvent::Key(Key::B, Action::Press, _) => {
                     let mut st = state.lock().unwrap();
                     st.show_backfaces = !st.show_backfaces;
                     backface_obj.set_visible(st.show_backfaces);
-                    println!("Backfaces: {}", if st.show_backfaces { "ON" } else { "OFF" });
+                    println!(
+                        "Backfaces: {}",
+                        if st.show_backfaces { "ON" } else { "OFF" }
+                    );
                 }
                 kiss3d::event::WindowEvent::Key(Key::U, Action::Press, _) => {
                     let mut st = state.lock().unwrap();

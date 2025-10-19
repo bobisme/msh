@@ -301,17 +301,24 @@ fn parse_axis(s: &str) -> Result<(f32, f32, f32), String> {
         return Err("Axis must be in format: x,y,z".to_string());
     }
 
-    let x = parts[0].trim().parse::<f32>()
+    let x = parts[0]
+        .trim()
+        .parse::<f32>()
         .map_err(|_| format!("Invalid x value: {}", parts[0]))?;
-    let y = parts[1].trim().parse::<f32>()
+    let y = parts[1]
+        .trim()
+        .parse::<f32>()
         .map_err(|_| format!("Invalid y value: {}", parts[1]))?;
-    let z = parts[2].trim().parse::<f32>()
+    let z = parts[2]
+        .trim()
+        .parse::<f32>()
         .map_err(|_| format!("Invalid z value: {}", parts[2]))?;
 
     Ok((x, y, z))
 }
 
-fn main() {
+#[kiss3d::main]
+async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
@@ -394,20 +401,18 @@ fn main() {
             #[cfg(feature = "remote")]
             {
                 if remote {
-                    if let Err(e) = viewer::view_mesh_with_rpc(&input, mesh.as_deref()) {
+                    if let Err(e) = viewer::view_mesh_with_rpc(&input, mesh.as_deref()).await {
                         eprintln!("Error viewing mesh: {}", e);
                         std::process::exit(1);
                     }
-                } else {
-                    if let Err(e) = viewer::view_mesh(&input, mesh.as_deref()) {
-                        eprintln!("Error viewing mesh: {}", e);
-                        std::process::exit(1);
-                    }
+                } else if let Err(e) = viewer::view_mesh(&input, mesh.as_deref()).await {
+                    eprintln!("Error viewing mesh: {}", e);
+                    std::process::exit(1);
                 }
             }
             #[cfg(not(feature = "remote"))]
             {
-                if let Err(e) = viewer::view_mesh(&input, mesh.as_deref()) {
+                if let Err(e) = viewer::view_mesh(&input, mesh.as_deref()).await {
                     eprintln!("Error viewing mesh: {}", e);
                     std::process::exit(1);
                 }
@@ -474,7 +479,8 @@ fn handle_remote_command(command: RemoteCommands) {
 
         let result: Result<(), Box<dyn std::error::Error>> = match command {
             RemoteCommands::Load { path, mesh } => {
-                let response = client::load_model(&client, path.to_string_lossy().to_string(), mesh).await?;
+                let response =
+                    client::load_model(&client, path.to_string_lossy().to_string(), mesh).await?;
                 println!("{}", response);
                 Ok(())
             }
