@@ -172,8 +172,7 @@ async fn run_viewer_with_commands(
     let mut mesh_obj = window.add_mesh(mesh_rc, na::Vector3::new(1.0, 1.0, 1.0));
     mesh_obj.set_color(0.8, 0.8, 0.8);
     mesh_obj.enable_backface_culling(true);
-    mesh_obj.set_lines_width(1.0);
-    mesh_obj.set_lines_color(Some(na::Point3::new(0.0, 0.0, 0.0)));
+    mesh_obj.set_lines_width(0.0); // Wireframe off by default
     mesh_obj.set_surface_rendering_activation(true);
 
     // Backface mesh

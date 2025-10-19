@@ -134,9 +134,8 @@ pub async fn view_mesh(
     mesh_obj.set_color(0.8, 0.8, 0.8);
     mesh_obj.enable_backface_culling(true); // Always cull backfaces on main mesh
 
-    // Enable wireframe overlay by default (surfaces + black edges)
-    mesh_obj.set_lines_width(1.0);
-    mesh_obj.set_lines_color(Some(na::Point3::new(0.0, 0.0, 0.0)));
+    // Wireframe overlay disabled by default
+    mesh_obj.set_lines_width(0.0);
     mesh_obj.set_surface_rendering_activation(true);
 
     // Backface mesh (reversed, red) - hidden by default
@@ -165,7 +164,7 @@ pub async fn view_mesh(
     let mut arc_ball = kiss3d::camera::ArcBall::new(eye, at);
 
     // State for interactive controls
-    let mut show_wireframe = true; // On by default
+    let mut show_wireframe = false; // Off by default
     let mut show_backfaces = false;
     let mut show_ui = true; // On by default
 
@@ -175,7 +174,6 @@ pub async fn view_mesh(
     println!("  B: Toggle backface visualization (red)");
     println!("  U: Toggle UI overlay");
     println!("  Q/ESC: Exit");
-    println!("Wireframe: ON (default)");
 
     // Load font for text rendering (use built-in font)
     let font = Arc::new(Font::default());
