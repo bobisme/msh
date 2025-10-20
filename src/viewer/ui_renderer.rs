@@ -3,6 +3,9 @@ use wgpu_text::{
     BrushBuilder, TextBrush,
     glyph_brush::{ab_glyph::FontArc, Section, Text},
 };
+use font_kit::family_name::FamilyName;
+use font_kit::properties::Properties;
+use font_kit::source::SystemSource;
 
 use super::state::ViewerState;
 
@@ -12,16 +15,31 @@ pub struct UiRenderer {
 }
 
 impl UiRenderer {
+    /// Load a system font using font-kit (cross-platform)
+    fn load_system_font() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let source = SystemSource::new();
+
+        // Try to find a sans-serif font
+        let handle = source
+            .select_best_match(&[FamilyName::SansSerif], &Properties::new())
+            .or_else(|_| {
+                // Fallback: try monospace
+                source.select_best_match(&[FamilyName::Monospace], &Properties::new())
+            })?;
+
+        // Load the font data
+        let font_data = handle.load()?.copy_font_data().ok_or("Failed to copy font data")?;
+        Ok(font_data.to_vec())
+    }
+
     pub fn new(
         device: &wgpu::Device,
         _queue: &wgpu::Queue,
         config: &wgpu::SurfaceConfiguration,
     ) -> Self {
-        // Load a system font - try multiple common locations
-        let font_data = std::fs::read("/usr/share/fonts/TTF/DejaVuSans.ttf")
-            .or_else(|_| std::fs::read("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"))
-            .or_else(|_| std::fs::read("/usr/share/fonts/noto/NotoSans-Regular.ttf"))
-            .expect("Failed to load system font - please install DejaVu or Noto fonts");
+        // Load a system font using font-kit (cross-platform)
+        let font_data = Self::load_system_font()
+            .expect("Failed to load system font");
 
         let font = FontArc::try_from_vec(font_data)
             .expect("Failed to parse font");

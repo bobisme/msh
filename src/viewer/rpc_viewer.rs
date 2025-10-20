@@ -29,6 +29,9 @@ use crate::mesh::loader::load_mesh;
 #[cfg(feature = "remote")]
 use crate::rpc::spawn_rpc_server;
 
+#[cfg(all(feature = "remote", feature = "renderdoc"))]
+use super::renderdoc_helper::RenderDocCapture;
+
 #[cfg(feature = "remote")]
 /// Application state for the RPC-enabled viewer
 struct RpcViewerApp {
@@ -47,6 +50,8 @@ struct RpcViewerApp {
     mouse_pressed_right: bool,
     last_mouse_pos: Option<winit::dpi::PhysicalPosition<f64>>,
     screenshot_path: Option<String>,
+    #[cfg(feature = "renderdoc")]
+    renderdoc: RenderDocCapture,
 }
 
 #[cfg(feature = "remote")]
@@ -75,6 +80,8 @@ impl RpcViewerApp {
             mouse_pressed_right: false,
             last_mouse_pos: None,
             screenshot_path: None,
+            #[cfg(feature = "renderdoc")]
+            renderdoc: RenderDocCapture::new(),
         }
     }
 
@@ -216,12 +223,7 @@ impl RpcViewerApp {
                     }
                     #[cfg(feature = "renderdoc")]
                     ViewerCommand::CaptureFrame { path } => {
-                        println!("RenderDoc frame capture requested");
-                        if let Some(_path) = path {
-                            println!("RenderDoc capture path: {}", _path);
-                        }
-                        // RenderDoc integration would go here
-                        println!("Note: RenderDoc integration not yet implemented");
+                        self.renderdoc.trigger_capture(path.as_deref());
                     }
                     ViewerCommand::Quit => {
                         println!("Quit command received via RPC");
