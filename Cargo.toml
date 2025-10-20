@@ -1,6 +1,6 @@
 [package]
 name = "mshmash"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 description = "A CLI tool for 3D mesh analysis, repair, and visualization"
 license = "MIT"

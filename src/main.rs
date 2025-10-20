@@ -10,6 +10,7 @@ mod viewer;
 #[derive(Parser)]
 #[command(name = "msh")]
 #[command(about = "A CLI tool for 3D mesh processing", long_about = None)]
+#[command(version)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -298,6 +299,9 @@ enum RemoteCommands {
         /// Output path for screenshot (e.g., "screenshot.png")
         path: String,
     },
+
+    /// Quit the running viewer
+    Quit,
 }
 
 #[cfg(feature = "remote")]
@@ -612,6 +616,11 @@ fn handle_remote_command(command: RemoteCommands) {
                 };
 
                 let response = client::screenshot(&client, absolute_path).await?;
+                println!("{}", response);
+                Ok(())
+            }
+            RemoteCommands::Quit => {
+                let response = client::quit(&client).await?;
                 println!("{}", response);
                 Ok(())
             }

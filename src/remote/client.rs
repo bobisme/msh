@@ -179,3 +179,11 @@ pub async fn screenshot(
         .await?;
     Ok(response)
 }
+
+#[cfg(feature = "remote")]
+pub async fn quit(client: &HttpClient) -> Result<String, Box<dyn std::error::Error>> {
+    let response: String = client
+        .request("quit", ArrayParams::new())
+        .await?;
+    Ok(response)
+}

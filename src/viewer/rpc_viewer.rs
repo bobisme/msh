@@ -482,6 +482,10 @@ async fn run_viewer_with_commands(
                         Err(e) => eprintln!("❌ Failed to save screenshot: {}", e),
                     }
                 }
+                ViewerCommand::Quit => {
+                    println!("Quit command received. Exiting viewer...");
+                    return Ok(());
+                }
             }
         }
 

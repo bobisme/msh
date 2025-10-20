@@ -82,6 +82,10 @@ pub trait ViewerRpc {
     /// Take a screenshot (save to PNG)
     #[method(name = "screenshot")]
     async fn screenshot(&self, path: String) -> Result<String, ErrorObjectOwned>;
+
+    /// Quit the viewer
+    #[method(name = "quit")]
+    async fn quit(&self) -> Result<String, ErrorObjectOwned>;
 }
 
 #[cfg(feature = "remote")]
@@ -295,5 +299,18 @@ impl ViewerRpcServer for ViewerRpcImpl {
             ))?;
 
         Ok(format!("Screenshot will be saved to: {}", path))
+    }
+
+    async fn quit(&self) -> Result<String, ErrorObjectOwned> {
+        let cmd = ViewerCommand::Quit;
+
+        self.command_tx.send(cmd)
+            .map_err(|e| ErrorObjectOwned::owned(
+                -32000,
+                "Failed to send command to viewer",
+                Some(e.to_string())
+            ))?;
+
+        Ok("Viewer will quit".to_string())
     }
 }

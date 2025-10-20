@@ -83,6 +83,8 @@ pub enum ViewerCommand {
     Screenshot {
         path: String,
     },
+    /// Quit the viewer
+    Quit,
 }
 
 impl ViewerState {

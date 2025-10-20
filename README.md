@@ -276,6 +276,11 @@ msh remote capture
 msh remote capture /path/to/save.rdc
 ```
 
+**Quit the Viewer**
+```bash
+msh remote quit
+```
+
 ### RenderDoc Integration (Feature: `renderdoc`)
 
 Capture GPU frames for debugging and analysis using RenderDoc.
@@ -396,6 +401,7 @@ Available methods:
 - `get_stats()` → `{vertices, edges, faces, is_manifold, holes}`
 - `screenshot(path: String)` - Save current view as PNG
 - `capture_frame(path: Option<String>)` (requires `renderdoc` feature)
+- `quit()` - Exit the viewer
 
 ## Feature Flags
 
