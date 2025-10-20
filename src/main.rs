@@ -327,8 +327,7 @@ fn parse_axis(s: &str) -> Result<(f32, f32, f32), String> {
     Ok((x, y, z))
 }
 
-#[kiss3d::main]
-async fn main() {
+fn main() {
     let cli = Cli::parse();
 
     match cli.command {
@@ -411,13 +410,13 @@ async fn main() {
             #[cfg(feature = "remote")]
             {
                 if remote {
-                    if let Err(e) = viewer::view_mesh_with_rpc(input.as_ref(), mesh.as_deref()).await {
+                    if let Err(e) = viewer::view_mesh_with_rpc(input.as_ref(), mesh.as_deref()) {
                         eprintln!("Error viewing mesh: {}", e);
                         std::process::exit(1);
                     }
                 } else {
                     let input_ref = input.as_ref().expect("input required when not using --remote");
-                    if let Err(e) = viewer::view_mesh(input_ref, mesh.as_deref()).await {
+                    if let Err(e) = viewer::view_mesh(input_ref, mesh.as_deref()) {
                         eprintln!("Error viewing mesh: {}", e);
                         std::process::exit(1);
                     }
@@ -425,7 +424,7 @@ async fn main() {
             }
             #[cfg(not(feature = "remote"))]
             {
-                if let Err(e) = viewer::view_mesh(&input, mesh.as_deref()).await {
+                if let Err(e) = viewer::view_mesh(&input, mesh.as_deref()) {
                     eprintln!("Error viewing mesh: {}", e);
                     std::process::exit(1);
                 }

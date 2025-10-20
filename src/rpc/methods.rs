@@ -138,7 +138,7 @@ impl ViewerRpcServer for ViewerRpcImpl {
         let angle_rad = parse_angle(&angle)
             .map_err(|e| ErrorObjectOwned::owned(-32602, "Invalid angle format", Some(e)))?;
 
-        let axis_vec = kiss3d::nalgebra::Vector3::new(axis[0], axis[1], axis[2]);
+        let axis_vec = nalgebra::Vector3::new(axis[0], axis[1], axis[2]);
 
         let cmd = ViewerCommand::RotateAroundAxis {
             axis: axis_vec,
@@ -157,7 +157,7 @@ impl ViewerRpcServer for ViewerRpcImpl {
 
     async fn set_camera_position(&self, x: f32, y: f32, z: f32) -> Result<String, ErrorObjectOwned> {
         let cmd = ViewerCommand::SetCameraPosition {
-            position: kiss3d::nalgebra::Point3::new(x, y, z),
+            position: nalgebra::Point3::new(x, y, z),
         };
 
         self.command_tx.send(cmd)
@@ -172,7 +172,7 @@ impl ViewerRpcServer for ViewerRpcImpl {
 
     async fn set_camera_target(&self, x: f32, y: f32, z: f32) -> Result<String, ErrorObjectOwned> {
         let cmd = ViewerCommand::SetCameraTarget {
-            target: kiss3d::nalgebra::Point3::new(x, y, z),
+            target: nalgebra::Point3::new(x, y, z),
         };
 
         self.command_tx.send(cmd)

@@ -1,37 +1,463 @@
 #[cfg(feature = "remote")]
 use crossbeam::channel::{self, Receiver, Sender};
 #[cfg(feature = "remote")]
-use kiss3d::event::{Action, Key};
-#[cfg(feature = "remote")]
-use kiss3d::light::Light;
-#[cfg(feature = "remote")]
-use kiss3d::nalgebra as na;
-#[cfg(feature = "remote")]
-use kiss3d::text::Font;
-#[cfg(feature = "remote")]
-use kiss3d::window::Window;
-#[cfg(feature = "remote")]
-use std::cell::RefCell;
+use nalgebra as na;
 #[cfg(feature = "remote")]
 use std::path::PathBuf;
 #[cfg(feature = "remote")]
-use std::rc::Rc;
-#[cfg(feature = "remote")]
 use std::sync::{Arc, Mutex};
+#[cfg(feature = "remote")]
+use winit::{
+    application::ApplicationHandler,
+    event::*,
+    event_loop::{ActiveEventLoop, EventLoop},
+    keyboard::{KeyCode, PhysicalKey},
+    window::{Window, WindowId},
+};
 
 #[cfg(feature = "remote")]
 use super::state::{MeshStats, ViewerCommand, ViewerState};
+#[cfg(feature = "remote")]
+use super::{
+    camera::ArcBallCamera,
+    gpu::GpuState,
+    mesh_renderer::MeshRenderer,
+    ui_renderer::UiRenderer,
+};
 #[cfg(feature = "remote")]
 use crate::mesh::loader::load_mesh;
 #[cfg(feature = "remote")]
 use crate::rpc::spawn_rpc_server;
 
 #[cfg(feature = "remote")]
-pub async fn view_mesh_with_rpc(
+/// Application state for the RPC-enabled viewer
+struct RpcViewerApp {
+    window: Option<Window>,
+    gpu: Option<GpuState<'static>>,
+    camera: Option<ArcBallCamera>,
+    mesh_renderer: Option<MeshRenderer>,
+    ui_renderer: Option<UiRenderer>,
+    state: Arc<Mutex<ViewerState>>,
+    command_rx: Receiver<ViewerCommand>,
+    vertices: Vec<na::Point3<f32>>,
+    indices: Vec<u32>,
+    backface_indices: Vec<u32>,
+    max_dimension: f32,
+    mouse_pressed_left: bool,
+    mouse_pressed_right: bool,
+    last_mouse_pos: Option<winit::dpi::PhysicalPosition<f64>>,
+}
+
+#[cfg(feature = "remote")]
+impl RpcViewerApp {
+    fn new(
+        state: Arc<Mutex<ViewerState>>,
+        command_rx: Receiver<ViewerCommand>,
+        vertices: Vec<na::Point3<f32>>,
+        indices: Vec<u32>,
+        backface_indices: Vec<u32>,
+        max_dimension: f32,
+    ) -> Self {
+        Self {
+            window: None,
+            gpu: None,
+            camera: None,
+            mesh_renderer: None,
+            ui_renderer: None,
+            state,
+            command_rx,
+            vertices,
+            indices,
+            backface_indices,
+            max_dimension,
+            mouse_pressed_left: false,
+            mouse_pressed_right: false,
+            last_mouse_pos: None,
+        }
+    }
+
+    fn process_commands(&mut self) {
+        // Process all pending commands
+        while let Ok(cmd) = self.command_rx.try_recv() {
+            if let Some(camera) = self.camera.as_mut() {
+                match cmd {
+                    ViewerCommand::ToggleWireframe(enabled) => {
+                        if let Ok(mut state) = self.state.lock() {
+                            state.show_wireframe = enabled;
+                            println!("Wireframe: {}", if state.show_wireframe { "ON" } else { "OFF" });
+                        }
+                    }
+                    ViewerCommand::ToggleBackfaces(enabled) => {
+                        if let Ok(mut state) = self.state.lock() {
+                            state.show_backfaces = enabled;
+                            println!("Backfaces: {}", if state.show_backfaces { "ON" } else { "OFF" });
+                        }
+                    }
+                    ViewerCommand::ToggleUI(enabled) => {
+                        if let Ok(mut state) = self.state.lock() {
+                            state.show_ui = enabled;
+                            println!("UI: {}", if state.show_ui { "ON" } else { "OFF" });
+                        }
+                    }
+                    ViewerCommand::SetCameraPosition { position } => {
+                        camera.set_position(position);
+                        println!("Camera position set to {:?}", position);
+                    }
+                    ViewerCommand::SetCameraTarget { target } => {
+                        camera.set_target(target);
+                    }
+                    ViewerCommand::SetRotation { x, y, z } => {
+                        if let Ok(mut state) = self.state.lock() {
+                            state.model_rotation = na::Vector3::new(x, y, z);
+                            println!("Set rotation: x={}, y={}, z={}", x, y, z);
+                        }
+                    }
+                    ViewerCommand::RotateAroundAxis { axis, angle } => {
+                        if let Ok(mut state) = self.state.lock() {
+                            state.apply_rotation(axis, angle);
+                            println!("Applied rotation: axis={:?}, angle={}", axis, angle);
+                        }
+                    }
+                    ViewerCommand::LoadModel { path, mesh_name } => {
+                        println!("Loading mesh from {:?}...", path);
+                        match load_mesh(&path, mesh_name.as_deref()) {
+                            Ok(mesh) => {
+                                // Calculate bounding box
+                                let mut min = [f32::INFINITY; 3];
+                                let mut max = [f32::NEG_INFINITY; 3];
+                                for vertex_id in mesh.vertices() {
+                                    let pos = mesh.vertex_position(vertex_id);
+                                    min[0] = min[0].min(pos.x);
+                                    min[1] = min[1].min(pos.y);
+                                    min[2] = min[2].min(pos.z);
+                                    max[0] = max[0].max(pos.x);
+                                    max[1] = max[1].max(pos.y);
+                                    max[2] = max[2].max(pos.z);
+                                }
+
+                                let center = [
+                                    (min[0] + max[0]) / 2.0,
+                                    (min[1] + max[1]) / 2.0,
+                                    (min[2] + max[2]) / 2.0,
+                                ];
+
+                                let size = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
+                                self.max_dimension = size[0].max(size[1]).max(size[2]);
+
+                                // Extract geometry
+                                self.vertices.clear();
+                                self.indices.clear();
+                                self.backface_indices.clear();
+
+                                let mut vertex_idx = 0u32;
+                                for face_id in mesh.faces() {
+                                    let triangle = mesh.face_positions(face_id);
+                                    let v0 = triangle.p1();
+                                    let v1 = triangle.p2();
+                                    let v2 = triangle.p3();
+
+                                    self.vertices.push(na::Point3::new(
+                                        v0.x - center[0],
+                                        v0.y - center[1],
+                                        v0.z - center[2],
+                                    ));
+                                    self.vertices.push(na::Point3::new(
+                                        v1.x - center[0],
+                                        v1.y - center[1],
+                                        v1.z - center[2],
+                                    ));
+                                    self.vertices.push(na::Point3::new(
+                                        v2.x - center[0],
+                                        v2.y - center[1],
+                                        v2.z - center[2],
+                                    ));
+
+                                    self.indices.push(vertex_idx);
+                                    self.indices.push(vertex_idx + 1);
+                                    self.indices.push(vertex_idx + 2);
+                                    vertex_idx += 3;
+                                }
+
+                                // Create backface indices
+                                for i in (0..self.indices.len()).step_by(3) {
+                                    self.backface_indices.push(self.indices[i]);
+                                    self.backface_indices.push(self.indices[i + 2]);
+                                    self.backface_indices.push(self.indices[i + 1]);
+                                }
+
+                                // Reload mesh in renderer
+                                if let (Some(gpu), Some(mesh_renderer)) = (self.gpu.as_ref(), self.mesh_renderer.as_mut()) {
+                                    mesh_renderer.load_mesh(&gpu.device, &self.vertices, &self.indices, &self.backface_indices);
+                                }
+
+                                // Update stats
+                                if let Ok(mut state) = self.state.lock() {
+                                    state.stats.vertex_count = mesh.count_vertices();
+                                    state.stats.face_count = mesh.count_faces();
+                                    state.stats.edge_count = mesh.unique_edges().count();
+                                    let boundary_rings = mesh.boundary_rings();
+                                    state.stats.is_manifold = boundary_rings.is_empty();
+                                    state.stats.hole_count = boundary_rings.len();
+                                }
+
+                                println!("Mesh loaded: {} triangles", self.indices.len() / 3);
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to load mesh: {}", e);
+                            }
+                        }
+                    }
+                    ViewerCommand::Screenshot { path } => {
+                        if let Some(gpu) = self.gpu.as_ref() {
+                            match gpu.screenshot(&path) {
+                                Ok(_) => println!("Screenshot saved to {}", path),
+                                Err(e) => eprintln!("Failed to save screenshot: {}", e),
+                            }
+                        }
+                    }
+                    #[cfg(feature = "renderdoc")]
+                    ViewerCommand::CaptureFrame { path } => {
+                        println!("RenderDoc frame capture requested");
+                        if let Some(_path) = path {
+                            println!("RenderDoc capture path: {}", _path);
+                        }
+                        // RenderDoc integration would go here
+                        println!("Note: RenderDoc integration not yet implemented");
+                    }
+                    ViewerCommand::Quit => {
+                        println!("Quit command received via RPC");
+                        std::process::exit(0);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "remote")]
+impl ApplicationHandler for RpcViewerApp {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_none() {
+            let window_attributes = Window::default_attributes()
+                .with_title("Mesh Viewer - msh (RPC Enabled)");
+            let window = event_loop.create_window(window_attributes).unwrap();
+
+            // Initialize GPU
+            let size = window.inner_size();
+            let gpu = pollster::block_on(async {
+                let window_ptr: &'static Window = unsafe {
+                    std::mem::transmute(&window as &Window)
+                };
+                GpuState::new(window_ptr).await.unwrap()
+            });
+
+            // Create camera
+            let camera_distance = self.max_dimension * 2.5;
+            let eye = na::Point3::new(
+                camera_distance * 0.5,
+                camera_distance * 0.3,
+                camera_distance,
+            );
+            let target = na::Point3::origin();
+            let camera = ArcBallCamera::new(eye, target, size.width, size.height);
+
+            // Create mesh renderer
+            let mut mesh_renderer = MeshRenderer::new(&gpu.device, &gpu.config);
+            mesh_renderer.load_mesh(&gpu.device, &self.vertices, &self.indices, &self.backface_indices);
+
+            // Create UI renderer
+            let ui_renderer = UiRenderer::new(&gpu.device, &gpu.queue, &gpu.config);
+
+            self.gpu = Some(gpu);
+            self.camera = Some(camera);
+            self.mesh_renderer = Some(mesh_renderer);
+            self.ui_renderer = Some(ui_renderer);
+            self.window = Some(window);
+
+            println!("Viewing mesh with RPC server on 127.0.0.1:9001...");
+            println!("  Mouse: Rotate (drag), Zoom (scroll), Pan (right-drag)");
+            println!("  W: Toggle wireframe overlay");
+            println!("  B: Toggle backface visualization (red)");
+            println!("  U: Toggle UI overlay");
+            println!("  Q/ESC: Exit");
+            println!("  RPC Commands: wireframe, backfaces, ui, screenshot, load, quit");
+        }
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        // Process RPC commands
+        self.process_commands();
+
+        match event {
+            WindowEvent::CloseRequested => {
+                event_loop.exit();
+            }
+            WindowEvent::Resized(new_size) => {
+                if let (Some(gpu), Some(mesh_renderer), Some(ui_renderer), Some(camera)) = (
+                    self.gpu.as_mut(),
+                    self.mesh_renderer.as_mut(),
+                    self.ui_renderer.as_mut(),
+                    self.camera.as_mut(),
+                ) {
+                    gpu.resize(new_size);
+                    mesh_renderer.resize(&gpu.device, &gpu.config);
+                    ui_renderer.resize(&gpu.device, &gpu.queue, new_size.width, new_size.height);
+                    camera.resize(new_size.width, new_size.height);
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if event.state == ElementState::Pressed {
+                    if let PhysicalKey::Code(keycode) = event.physical_key {
+                        match keycode {
+                            KeyCode::KeyW => {
+                                if let Ok(mut state) = self.state.lock() {
+                                    state.show_wireframe = !state.show_wireframe;
+                                    println!("Wireframe: {}", if state.show_wireframe { "ON" } else { "OFF" });
+                                }
+                            }
+                            KeyCode::KeyB => {
+                                if let Ok(mut state) = self.state.lock() {
+                                    state.show_backfaces = !state.show_backfaces;
+                                    println!("Backfaces: {}", if state.show_backfaces { "ON" } else { "OFF" });
+                                }
+                            }
+                            KeyCode::KeyU => {
+                                if let Ok(mut state) = self.state.lock() {
+                                    state.show_ui = !state.show_ui;
+                                    println!("UI: {}", if state.show_ui { "ON" } else { "OFF" });
+                                }
+                            }
+                            KeyCode::KeyQ | KeyCode::Escape => {
+                                event_loop.exit();
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            WindowEvent::MouseInput { state: btn_state, button, .. } => {
+                match button {
+                    MouseButton::Left => {
+                        self.mouse_pressed_left = btn_state == ElementState::Pressed;
+                        if !self.mouse_pressed_left {
+                            self.last_mouse_pos = None;
+                        }
+                    }
+                    MouseButton::Right => {
+                        self.mouse_pressed_right = btn_state == ElementState::Pressed;
+                        if !self.mouse_pressed_right {
+                            self.last_mouse_pos = None;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                if let Some(camera) = self.camera.as_mut() {
+                    if let Some(last_pos) = self.last_mouse_pos {
+                        let delta_x = position.x - last_pos.x;
+                        let delta_y = position.y - last_pos.y;
+
+                        if self.mouse_pressed_left {
+                            camera.rotate(delta_x as f32, delta_y as f32);
+                        } else if self.mouse_pressed_right {
+                            camera.pan(delta_x as f32, delta_y as f32);
+                        }
+                    }
+                    if self.mouse_pressed_left || self.mouse_pressed_right {
+                        self.last_mouse_pos = Some(position);
+                    }
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if let Some(camera) = self.camera.as_mut() {
+                    let scroll_delta = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => y,
+                        MouseScrollDelta::PixelDelta(pos) => (pos.y / 100.0) as f32,
+                    };
+                    camera.zoom(scroll_delta);
+                }
+            }
+            WindowEvent::RedrawRequested => {
+                if let (Some(window), Some(gpu), Some(camera), Some(mesh_renderer), Some(ui_renderer)) = (
+                    self.window.as_ref(),
+                    self.gpu.as_mut(),
+                    self.camera.as_ref(),
+                    self.mesh_renderer.as_mut(),
+                    self.ui_renderer.as_mut(),
+                ) {
+                    // Get current state
+                    let (show_wireframe, show_backfaces, show_ui) = if let Ok(state) = self.state.lock() {
+                        (state.show_wireframe, state.show_backfaces, state.show_ui)
+                    } else {
+                        (false, false, true)
+                    };
+
+                    // Update uniforms
+                    let view_proj = camera.view_projection_matrix();
+                    let model = na::Matrix4::identity();
+                    mesh_renderer.update_uniforms(&gpu.queue, &view_proj, &model);
+
+                    // Queue UI text
+                    if show_ui {
+                        if let Ok(state) = self.state.lock() {
+                            ui_renderer.queue_text(&gpu.device, &gpu.queue, &state, true);
+                        }
+                    }
+
+                    // Render
+                    match gpu.surface.get_current_texture() {
+                        Ok(output) => {
+                            let view = output
+                                .texture
+                                .create_view(&wgpu::TextureViewDescriptor::default());
+
+                            let mut encoder = gpu
+                                .device
+                                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                                    label: Some("Render Encoder"),
+                                });
+
+                            // Render mesh
+                            mesh_renderer.render(
+                                &mut encoder,
+                                &view,
+                                show_wireframe,
+                                show_backfaces,
+                            );
+
+                            // Render UI
+                            if show_ui {
+                                ui_renderer.render(&mut encoder, &view);
+                            }
+
+                            gpu.queue.submit(std::iter::once(encoder.finish()));
+                            output.present();
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to get surface texture: {:?}", e);
+                        }
+                    }
+
+                    window.request_redraw();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(feature = "remote")]
+pub fn view_mesh_with_rpc(
     input: Option<&PathBuf>,
     mesh_name: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (initial_mesh, max_dimension, stats) = if let Some(input_path) = input {
+    let (vertices, indices, backface_indices, max_dimension, stats) = if let Some(input_path) = input {
         println!("Loading mesh from {:?}...", input_path);
 
         // Load initial mesh
@@ -53,65 +479,8 @@ pub async fn view_mesh_with_rpc(
         };
 
         // Calculate bounding box
-        let mut min = [f32::INFINITY, f32::INFINITY, f32::INFINITY];
-        let mut max = [f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
-
-        for vertex_id in mesh.vertices() {
-            let pos = mesh.vertex_position(vertex_id);
-            min[0] = min[0].min(pos.x);
-            min[1] = min[1].min(pos.y);
-            min[2] = min[2].min(pos.z);
-            max[0] = max[0].max(pos.x);
-            max[1] = max[1].max(pos.y);
-            max[2] = max[2].max(pos.z);
-        }
-
-        let size = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
-        let max_dimension = size[0].max(size[1]).max(size[2]);
-
-        (Some(mesh), max_dimension, stats)
-    } else {
-        println!("Starting viewer without initial mesh (use 'msh remote load' to load a mesh)...");
-        // No initial mesh - start with empty viewer
-        (None, 1.0, MeshStats::default())
-    };
-
-    // Create shared state
-    let state = Arc::new(Mutex::new(ViewerState::for_mesh(max_dimension, stats)));
-
-    // Create command channel
-    let (command_tx, command_rx): (Sender<ViewerCommand>, Receiver<ViewerCommand>) =
-        channel::unbounded();
-
-    // Spawn RPC server in background thread
-    let state_clone = Arc::clone(&state);
-    let _rpc_handle = spawn_rpc_server(state_clone, command_tx, 9001);
-
-    // Run viewer with command processing
-    run_viewer_with_commands(initial_mesh, state, command_rx, max_dimension).await?;
-
-    Ok(())
-}
-
-#[cfg(feature = "remote")]
-async fn run_viewer_with_commands(
-    initial_mesh: Option<baby_shark::mesh::corner_table::CornerTableF>,
-    state: Arc<Mutex<ViewerState>>,
-    command_rx: Receiver<ViewerCommand>,
-    initial_max_dimension: f32,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // Extract geometry if initial mesh is provided
-    let (vertices, indices, reversed_indices) = if let Some(ref mesh) = initial_mesh {
-        use baby_shark::io::write_to_file;
-
-        // Write to temporary OBJ file
-        let temp_obj = std::env::temp_dir().join("msh_temp_view.obj");
-        write_to_file(mesh, &temp_obj)
-            .map_err(|e| format!("Failed to write temp mesh: {:?}", e))?;
-
-        // Calculate center for initial mesh
-        let mut min = [f32::INFINITY, f32::INFINITY, f32::INFINITY];
-        let mut max = [f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
+        let mut min = [f32::INFINITY; 3];
+        let mut max = [f32::NEG_INFINITY; 3];
 
         for vertex_id in mesh.vertices() {
             let pos = mesh.vertex_position(vertex_id);
@@ -129,9 +498,12 @@ async fn run_viewer_with_commands(
             (min[2] + max[2]) / 2.0,
         ];
 
+        let size = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
+        let max_dimension = size[0].max(size[1]).max(size[2]);
+
         // Extract geometry
         let mut vertices: Vec<na::Point3<f32>> = Vec::new();
-        let mut indices: Vec<na::Point3<u32>> = Vec::new();
+        let mut indices: Vec<u32> = Vec::new();
         let mut vertex_idx = 0u32;
 
         for face_id in mesh.faces() {
@@ -156,517 +528,51 @@ async fn run_viewer_with_commands(
                 v2.z - center[2],
             ));
 
-            indices.push(na::Point3::new(vertex_idx, vertex_idx + 1, vertex_idx + 2));
+            indices.push(vertex_idx);
+            indices.push(vertex_idx + 1);
+            indices.push(vertex_idx + 2);
             vertex_idx += 3;
         }
 
-        // Create reversed mesh for backfaces
-        let mut reversed_indices: Vec<na::Point3<u32>> = Vec::new();
-        for tri in &indices {
-            reversed_indices.push(na::Point3::new(tri.x, tri.z, tri.y));
+        // Create backface indices
+        let mut backface_indices: Vec<u32> = Vec::new();
+        for i in (0..indices.len()).step_by(3) {
+            backface_indices.push(indices[i]);
+            backface_indices.push(indices[i + 2]);
+            backface_indices.push(indices[i + 1]);
         }
 
-        (vertices, indices, reversed_indices)
+        (vertices, indices, backface_indices, max_dimension, stats)
     } else {
-        // Start with empty geometry (single degenerate triangle to avoid errors)
+        println!("Starting viewer without initial mesh (use 'msh remote load' to load a mesh)...");
+        // No initial mesh - start with empty geometry
         let vertices = vec![
             na::Point3::new(0.0, 0.0, 0.0),
             na::Point3::new(0.0, 0.0, 0.0),
             na::Point3::new(0.0, 0.0, 0.0),
         ];
-        let indices = vec![na::Point3::new(0, 1, 2)];
-        let reversed_indices = vec![na::Point3::new(0, 2, 1)];
-        (vertices, indices, reversed_indices)
+        let indices = vec![0, 1, 2];
+        let backface_indices = vec![0, 2, 1];
+        (vertices, indices, backface_indices, 1.0, MeshStats::default())
     };
 
-    println!("Creating viewer window with RPC server enabled...");
-    let mut window = Window::new("Mesh Viewer - msh (RPC Enabled)");
-    window.set_light(Light::StickToCamera);
+    // Create shared state
+    let state = Arc::new(Mutex::new(ViewerState::for_mesh(max_dimension, stats)));
 
-    // Main mesh
-    let mesh_rc = Rc::new(RefCell::new(kiss3d::resource::GpuMesh::new(
-        vertices.clone(),
-        indices,
-        None,
-        None,
-        false,
-    )));
+    // Create command channel
+    let (command_tx, command_rx): (Sender<ViewerCommand>, Receiver<ViewerCommand>) =
+        channel::unbounded();
 
-    let mut mesh_obj = window.add_mesh(mesh_rc, na::Vector3::new(1.0, 1.0, 1.0));
-    mesh_obj.set_color(0.8, 0.8, 0.8);
-    mesh_obj.enable_backface_culling(true);
-    mesh_obj.set_lines_width(0.0); // Wireframe off by default
-    mesh_obj.set_surface_rendering_activation(true);
+    // Spawn RPC server in background thread
+    let state_clone = Arc::clone(&state);
+    let _rpc_handle = spawn_rpc_server(state_clone, command_tx, 9001);
 
-    // Backface mesh
-    let backface_mesh_rc = Rc::new(RefCell::new(kiss3d::resource::GpuMesh::new(
-        vertices,
-        reversed_indices,
-        None,
-        None,
-        false,
-    )));
+    // Create application
+    let mut app = RpcViewerApp::new(state, command_rx, vertices, indices, backface_indices, max_dimension);
 
-    let mut backface_obj = window.add_mesh(backface_mesh_rc, na::Vector3::new(1.0, 1.0, 1.0));
-    backface_obj.set_color(1.0, 0.0, 0.0);
-    backface_obj.enable_backface_culling(true);
-    backface_obj.set_visible(false);
-
-    // Camera setup
-    let camera_distance = initial_max_dimension * 2.5;
-    let eye = na::Point3::new(
-        camera_distance * 0.5,
-        camera_distance * 0.3,
-        camera_distance,
-    );
-    let at = na::Point3::new(0.0, 0.0, 0.0);
-    let mut arc_ball = kiss3d::camera::ArcBall::new(eye, at);
-
-    let font = Arc::new(Font::default());
-
-    // Initialize RenderDoc if available
-    #[cfg(feature = "renderdoc")]
-    let mut renderdoc = crate::viewer::renderdoc_helper::RenderDocCapture::new();
-
-    println!("Viewer ready. RPC server listening on http://127.0.0.1:9001");
-    println!("  W: Toggle wireframe");
-    println!("  B: Toggle backfaces");
-    println!("  U: Toggle UI");
-    println!("  Q/ESC: Exit");
-
-    while window.render_with_camera(&mut arc_ball).await {
-        // Process RPC commands (non-blocking)
-        while let Ok(cmd) = command_rx.try_recv() {
-            match cmd {
-                ViewerCommand::SetRotation { x, y, z } => {
-                    let mut st = state.lock().unwrap();
-                    st.model_rotation = na::Vector3::new(x, y, z);
-                    let rot = na::UnitQuaternion::from_euler_angles(x, y, z);
-                    mesh_obj.set_local_rotation(rot);
-                    backface_obj.set_local_rotation(rot);
-                    println!("Set rotation to ({}, {}, {})", x, y, z);
-                }
-                ViewerCommand::RotateAroundAxis { axis, angle } => {
-                    let mut st = state.lock().unwrap();
-                    st.apply_rotation(axis, angle);
-                    let rot = na::UnitQuaternion::from_euler_angles(
-                        st.model_rotation.x,
-                        st.model_rotation.y,
-                        st.model_rotation.z,
-                    );
-                    mesh_obj.set_local_rotation(rot);
-                    backface_obj.set_local_rotation(rot);
-                    println!("Rotated around axis {:?} by {} rad", axis, angle);
-                }
-                ViewerCommand::SetCameraPosition { position } => {
-                    arc_ball.set_at(arc_ball.at()); // Keep target same
-                    // Note: kiss3d's ArcBall doesn't expose set_eye directly,
-                    // so we rebuild it
-                    let target = arc_ball.at();
-                    arc_ball = kiss3d::camera::ArcBall::new(position, target);
-                    let mut st = state.lock().unwrap();
-                    st.camera_position = position;
-                    println!("Set camera position to {:?}", position);
-                }
-                ViewerCommand::SetCameraTarget { target } => {
-                    let eye = na::Point3::new(
-                        arc_ball.at().x + (arc_ball.at().x - target.x),
-                        arc_ball.at().y + (arc_ball.at().y - target.y),
-                        arc_ball.at().z + (arc_ball.at().z - target.z),
-                    );
-                    arc_ball = kiss3d::camera::ArcBall::new(eye, target);
-                    let mut st = state.lock().unwrap();
-                    st.camera_target = target;
-                    println!("Set camera target to {:?}", target);
-                }
-                ViewerCommand::ToggleWireframe(enabled) => {
-                    if enabled {
-                        mesh_obj.set_lines_width(1.0);
-                        mesh_obj.set_lines_color(Some(na::Point3::new(0.0, 0.0, 0.0)));
-                    } else {
-                        mesh_obj.set_lines_width(0.0);
-                    }
-                    let mut st = state.lock().unwrap();
-                    st.show_wireframe = enabled;
-                    println!("Wireframe: {}", if enabled { "ON" } else { "OFF" });
-                }
-                ViewerCommand::ToggleBackfaces(enabled) => {
-                    backface_obj.set_visible(enabled);
-                    let mut st = state.lock().unwrap();
-                    st.show_backfaces = enabled;
-                    println!("Backfaces: {}", if enabled { "ON" } else { "OFF" });
-                }
-                ViewerCommand::ToggleUI(enabled) => {
-                    let mut st = state.lock().unwrap();
-                    st.show_ui = enabled;
-                    println!("UI: {}", if enabled { "ON" } else { "OFF" });
-                }
-                ViewerCommand::LoadModel { path, mesh_name } => {
-                    println!("Loading model from {:?}...", path);
-
-                    // Load the new mesh
-                    match load_mesh(&path, mesh_name.as_deref()) {
-                        Ok(new_mesh) => {
-                            // Calculate mesh statistics
-                            let vertex_count = new_mesh.count_vertices();
-                            let face_count = new_mesh.count_faces();
-                            let edge_count = new_mesh.unique_edges().count();
-                            let boundary_rings = new_mesh.boundary_rings();
-                            let is_manifold = boundary_rings.is_empty();
-
-                            let new_stats = MeshStats {
-                                vertex_count,
-                                edge_count,
-                                face_count,
-                                is_manifold,
-                                hole_count: boundary_rings.len(),
-                            };
-
-                            // Calculate bounding box
-                            let mut min = [f32::INFINITY, f32::INFINITY, f32::INFINITY];
-                            let mut max = [f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
-
-                            for vertex_id in new_mesh.vertices() {
-                                let pos = new_mesh.vertex_position(vertex_id);
-                                min[0] = min[0].min(pos.x);
-                                min[1] = min[1].min(pos.y);
-                                min[2] = min[2].min(pos.z);
-                                max[0] = max[0].max(pos.x);
-                                max[1] = max[1].max(pos.y);
-                                max[2] = max[2].max(pos.z);
-                            }
-
-                            let center = [
-                                (min[0] + max[0]) / 2.0,
-                                (min[1] + max[1]) / 2.0,
-                                (min[2] + max[2]) / 2.0,
-                            ];
-
-                            let size = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
-                            let new_max_dimension = size[0].max(size[1]).max(size[2]);
-
-                            // Extract geometry
-                            let mut new_vertices: Vec<na::Point3<f32>> = Vec::new();
-                            let mut new_indices: Vec<na::Point3<u32>> = Vec::new();
-                            let mut vertex_idx = 0u32;
-
-                            for face_id in new_mesh.faces() {
-                                let triangle = new_mesh.face_positions(face_id);
-                                let v0 = triangle.p1();
-                                let v1 = triangle.p2();
-                                let v2 = triangle.p3();
-
-                                new_vertices.push(na::Point3::new(
-                                    v0.x - center[0],
-                                    v0.y - center[1],
-                                    v0.z - center[2],
-                                ));
-                                new_vertices.push(na::Point3::new(
-                                    v1.x - center[0],
-                                    v1.y - center[1],
-                                    v1.z - center[2],
-                                ));
-                                new_vertices.push(na::Point3::new(
-                                    v2.x - center[0],
-                                    v2.y - center[1],
-                                    v2.z - center[2],
-                                ));
-
-                                new_indices.push(na::Point3::new(vertex_idx, vertex_idx + 1, vertex_idx + 2));
-                                vertex_idx += 3;
-                            }
-
-                            // Create reversed indices for backfaces
-                            let mut new_reversed_indices: Vec<na::Point3<u32>> = Vec::new();
-                            for tri in &new_indices {
-                                new_reversed_indices.push(na::Point3::new(tri.x, tri.z, tri.y));
-                            }
-
-                            // Remove old meshes
-                            window.remove_node(&mut mesh_obj);
-                            window.remove_node(&mut backface_obj);
-
-                            // Create new GPU meshes
-                            let new_mesh_rc = Rc::new(RefCell::new(kiss3d::resource::GpuMesh::new(
-                                new_vertices.clone(),
-                                new_indices,
-                                None,
-                                None,
-                                false,
-                            )));
-
-                            mesh_obj = window.add_mesh(new_mesh_rc, na::Vector3::new(1.0, 1.0, 1.0));
-                            mesh_obj.set_color(0.8, 0.8, 0.8);
-                            mesh_obj.enable_backface_culling(true);
-
-                            // Apply current wireframe state
-                            let st = state.lock().unwrap();
-                            if st.show_wireframe {
-                                mesh_obj.set_lines_width(1.0);
-                                mesh_obj.set_lines_color(Some(na::Point3::new(0.0, 0.0, 0.0)));
-                            } else {
-                                mesh_obj.set_lines_width(0.0);
-                            }
-                            mesh_obj.set_surface_rendering_activation(true);
-
-                            // Create new backface mesh
-                            let new_backface_mesh_rc = Rc::new(RefCell::new(kiss3d::resource::GpuMesh::new(
-                                new_vertices,
-                                new_reversed_indices,
-                                None,
-                                None,
-                                false,
-                            )));
-
-                            backface_obj = window.add_mesh(new_backface_mesh_rc, na::Vector3::new(1.0, 1.0, 1.0));
-                            backface_obj.set_color(1.0, 0.0, 0.0);
-                            backface_obj.enable_backface_culling(true);
-                            backface_obj.set_visible(st.show_backfaces);
-
-                            // Apply current rotation
-                            let rot = na::UnitQuaternion::from_euler_angles(
-                                st.model_rotation.x,
-                                st.model_rotation.y,
-                                st.model_rotation.z,
-                            );
-                            mesh_obj.set_local_rotation(rot);
-                            backface_obj.set_local_rotation(rot);
-                            drop(st);
-
-                            // Update camera to frame new mesh
-                            let camera_distance = new_max_dimension * 2.5;
-                            let new_eye = na::Point3::new(
-                                camera_distance * 0.5,
-                                camera_distance * 0.3,
-                                camera_distance,
-                            );
-                            let new_at = na::Point3::new(0.0, 0.0, 0.0);
-                            arc_ball = kiss3d::camera::ArcBall::new(new_eye, new_at);
-
-                            // Update state
-                            let mut st = state.lock().unwrap();
-                            st.stats = new_stats;
-                            st.camera_position = new_eye;
-                            st.camera_target = new_at;
-                            drop(st);
-
-                            println!("✓ Model loaded successfully: {} vertices, {} faces", vertex_count, face_count);
-                        }
-                        Err(e) => {
-                            eprintln!("❌ Failed to load model: {}", e);
-                        }
-                    }
-                }
-                #[cfg(feature = "renderdoc")]
-                ViewerCommand::CaptureFrame { path } => {
-                    renderdoc.trigger_capture(path.as_deref());
-                }
-                ViewerCommand::Screenshot { path } => {
-                    // Create parent directories if they don't exist
-                    if let Some(parent) = std::path::Path::new(&path).parent() {
-                        if !parent.as_os_str().is_empty() {
-                            if let Err(e) = std::fs::create_dir_all(parent) {
-                                eprintln!(
-                                    "❌ Failed to create directory {}: {}",
-                                    parent.display(),
-                                    e
-                                );
-                                continue;
-                            }
-                        }
-                    }
-
-                    let img = window.snap_image();
-                    match img.save(&path) {
-                        Ok(_) => println!("📸 Screenshot saved to: {}", path),
-                        Err(e) => eprintln!("❌ Failed to save screenshot: {}", e),
-                    }
-                }
-                ViewerCommand::Quit => {
-                    println!("Quit command received. Exiting viewer...");
-                    return Ok(());
-                }
-            }
-        }
-
-        // Draw UI if enabled
-        let st = state.lock().unwrap();
-        if st.show_ui {
-            draw_ui_overlay(&mut window, &font, &st);
-        }
-        drop(st);
-
-        // Handle keyboard input
-        for event in window.events().iter() {
-            match event.value {
-                kiss3d::event::WindowEvent::Key(Key::W, Action::Press, _) => {
-                    let mut st = state.lock().unwrap();
-                    st.show_wireframe = !st.show_wireframe;
-                    if st.show_wireframe {
-                        mesh_obj.set_lines_width(1.0);
-                        mesh_obj.set_lines_color(Some(na::Point3::new(0.0, 0.0, 0.0)));
-                    } else {
-                        mesh_obj.set_lines_width(0.0);
-                    }
-                    println!(
-                        "Wireframe: {}",
-                        if st.show_wireframe { "ON" } else { "OFF" }
-                    );
-                }
-                kiss3d::event::WindowEvent::Key(Key::B, Action::Press, _) => {
-                    let mut st = state.lock().unwrap();
-                    st.show_backfaces = !st.show_backfaces;
-                    backface_obj.set_visible(st.show_backfaces);
-                    println!(
-                        "Backfaces: {}",
-                        if st.show_backfaces { "ON" } else { "OFF" }
-                    );
-                }
-                kiss3d::event::WindowEvent::Key(Key::U, Action::Press, _) => {
-                    let mut st = state.lock().unwrap();
-                    st.show_ui = !st.show_ui;
-                    println!("UI: {}", if st.show_ui { "ON" } else { "OFF" });
-                }
-                kiss3d::event::WindowEvent::Key(Key::Q, Action::Press, _)
-                | kiss3d::event::WindowEvent::Key(Key::Escape, Action::Press, _) => {
-                    return Ok(());
-                }
-                _ => {}
-            }
-        }
-    }
+    // Create and run event loop
+    let event_loop = EventLoop::new()?;
+    event_loop.run_app(&mut app)?;
 
     Ok(())
-}
-
-#[cfg(feature = "remote")]
-fn draw_ui_overlay(window: &mut Window, font: &Arc<Font>, state: &ViewerState) {
-    let x_offset = 11.0;
-    let y_offset = 15.0;
-    let line_height = 18.0;
-    let header_size = 26.0;
-    let text_size = 18.0;
-    let header_padding = 8.0;
-
-    let header_color = na::Point3::new(0.8, 0.8, 0.8);
-    let text_color = na::Point3::new(0.9, 0.9, 0.9);
-
-    window.draw_text(
-        "Controls",
-        &na::Point2::new(x_offset - 1.0, y_offset),
-        header_size,
-        font,
-        &header_color,
-    );
-    let mut current_y = y_offset + line_height + header_padding;
-
-    window.draw_text(
-        "W: Toggle Wireframe",
-        &na::Point2::new(x_offset, current_y),
-        text_size,
-        font,
-        &text_color,
-    );
-    current_y += line_height;
-
-    window.draw_text(
-        "B: Toggle Backfaces",
-        &na::Point2::new(x_offset, current_y),
-        text_size,
-        font,
-        &text_color,
-    );
-    current_y += line_height;
-
-    window.draw_text(
-        "U: Toggle UI",
-        &na::Point2::new(x_offset, current_y),
-        text_size,
-        font,
-        &text_color,
-    );
-    current_y += line_height;
-
-    window.draw_text(
-        "Q/ESC: Exit",
-        &na::Point2::new(x_offset, current_y),
-        text_size,
-        font,
-        &text_color,
-    );
-
-    current_y += line_height * 2.0;
-    window.draw_text(
-        "Mesh Info",
-        &na::Point2::new(x_offset - 1.0, current_y),
-        header_size,
-        font,
-        &header_color,
-    );
-    current_y += line_height + header_padding;
-
-    window.draw_text(
-        &format!("Vertices: {}", state.stats.vertex_count),
-        &na::Point2::new(x_offset, current_y),
-        text_size,
-        font,
-        &text_color,
-    );
-    current_y += line_height;
-
-    window.draw_text(
-        &format!("Edges: {}", state.stats.edge_count),
-        &na::Point2::new(x_offset, current_y),
-        text_size,
-        font,
-        &text_color,
-    );
-    current_y += line_height;
-
-    window.draw_text(
-        &format!("Faces: {}", state.stats.face_count),
-        &na::Point2::new(x_offset, current_y),
-        text_size,
-        font,
-        &text_color,
-    );
-    current_y += line_height;
-
-    let manifold_text = if state.stats.is_manifold {
-        "Manifold: Yes".to_string()
-    } else {
-        format!("Manifold: No ({} holes)", state.stats.hole_count)
-    };
-    let manifold_color = if state.stats.is_manifold {
-        na::Point3::new(0.4, 1.0, 0.4)
-    } else {
-        na::Point3::new(1.0, 0.4, 0.4)
-    };
-    window.draw_text(
-        &manifold_text,
-        &na::Point2::new(x_offset, current_y),
-        text_size,
-        font,
-        &manifold_color,
-    );
-
-    // RPC Status
-    current_y += line_height * 2.0;
-    window.draw_text(
-        "RPC Server",
-        &na::Point2::new(x_offset - 1.0, current_y),
-        header_size,
-        font,
-        &header_color,
-    );
-    current_y += line_height + header_padding;
-
-    let rpc_color = na::Point3::new(0.4, 1.0, 0.4);
-    window.draw_text(
-        "Active: 127.0.0.1:9001",
-        &na::Point2::new(x_offset, current_y),
-        text_size,
-        font,
-        &rpc_color,
-    );
 }

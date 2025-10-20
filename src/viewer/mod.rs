@@ -1,5 +1,13 @@
+pub mod camera;
+pub mod gpu;
+pub mod mesh_renderer;
 pub mod render;
 pub mod state;
+pub mod ui_renderer;
+
+mod shaders {
+    // Empty module to include shader directory
+}
 
 #[cfg(feature = "remote")]
 pub mod rpc_viewer;
