@@ -411,15 +411,20 @@ impl ApplicationHandler for RpcViewerApp {
                     self.ui_renderer.as_mut(),
                 ) {
                     // Get current state
-                    let (show_wireframe, show_backfaces, show_ui) = if let Ok(state) = self.state.lock() {
-                        (state.show_wireframe, state.show_backfaces, state.show_ui)
+                    let (show_wireframe, show_backfaces, show_ui, model_rotation) = if let Ok(state) = self.state.lock() {
+                        (state.show_wireframe, state.show_backfaces, state.show_ui, state.model_rotation)
                     } else {
-                        (false, false, true)
+                        (false, false, true, na::Vector3::zeros())
                     };
 
                     // Update uniforms
                     let view_proj = camera.view_projection_matrix();
-                    let model = na::Matrix4::identity();
+                    let rotation = na::Rotation3::from_euler_angles(
+                        model_rotation.x,
+                        model_rotation.y,
+                        model_rotation.z,
+                    );
+                    let model = rotation.to_homogeneous();
                     mesh_renderer.update_uniforms(&gpu.queue, &view_proj, &model, &camera.position());
 
                     // Queue UI text
