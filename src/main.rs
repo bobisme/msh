@@ -149,6 +149,10 @@ enum Commands {
         #[cfg(feature = "remote")]
         #[arg(long)]
         remote: bool,
+
+        /// Disable vsync (unlocked framerate)
+        #[arg(long)]
+        no_vsync: bool,
     },
 
     /// Check if mesh is manifold (watertight)
@@ -406,17 +410,18 @@ fn main() {
             mesh,
             #[cfg(feature = "remote")]
             remote,
+            no_vsync,
         } => {
             #[cfg(feature = "remote")]
             {
                 if remote {
-                    if let Err(e) = viewer::view_mesh_with_rpc(input.as_ref(), mesh.as_deref()) {
+                    if let Err(e) = viewer::view_mesh_with_rpc(input.as_ref(), mesh.as_deref(), no_vsync) {
                         eprintln!("Error viewing mesh: {}", e);
                         std::process::exit(1);
                     }
                 } else {
                     let input_ref = input.as_ref().expect("input required when not using --remote");
-                    if let Err(e) = viewer::view_mesh(input_ref, mesh.as_deref()) {
+                    if let Err(e) = viewer::view_mesh(input_ref, mesh.as_deref(), no_vsync) {
                         eprintln!("Error viewing mesh: {}", e);
                         std::process::exit(1);
                     }
@@ -424,7 +429,7 @@ fn main() {
             }
             #[cfg(not(feature = "remote"))]
             {
-                if let Err(e) = viewer::view_mesh(&input, mesh.as_deref()) {
+                if let Err(e) = viewer::view_mesh(&input, mesh.as_deref(), no_vsync) {
                     eprintln!("Error viewing mesh: {}", e);
                     std::process::exit(1);
                 }

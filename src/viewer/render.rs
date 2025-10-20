@@ -33,6 +33,7 @@ struct ViewerApp {
     mouse_pressed_left: bool,
     mouse_pressed_right: bool,
     last_mouse_pos: Option<winit::dpi::PhysicalPosition<f64>>,
+    vsync: bool,
 }
 
 impl ViewerApp {
@@ -42,6 +43,7 @@ impl ViewerApp {
         indices: Vec<u32>,
         backface_indices: Vec<u32>,
         max_dimension: f32,
+        vsync: bool,
     ) -> Self {
         Self {
             window: None,
@@ -57,6 +59,7 @@ impl ViewerApp {
             mouse_pressed_left: false,
             mouse_pressed_right: false,
             last_mouse_pos: None,
+            vsync,
         }
     }
 }
@@ -71,13 +74,14 @@ impl ApplicationHandler for ViewerApp {
 
             // Initialize GPU - use pollster to block on async init
             let size = window.inner_size();
+            let vsync = self.vsync;
             let gpu = pollster::block_on(async {
                 // SAFETY: The window lives as long as ViewerApp, and we ensure
                 // the surface (which borrows the window) is dropped before the window
                 let window_ptr: &'static Window = unsafe {
                     std::mem::transmute(&window as &Window)
                 };
-                GpuState::new(window_ptr).await.unwrap()
+                GpuState::new(window_ptr, vsync).await.unwrap()
             });
 
             // Create camera
@@ -275,6 +279,7 @@ impl ApplicationHandler for ViewerApp {
 pub fn view_mesh(
     input: &PathBuf,
     mesh_name: Option<&str>,
+    no_vsync: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Loading mesh from {:?}...", input);
 
@@ -386,7 +391,8 @@ pub fn view_mesh(
     let state = ViewerState::for_mesh(max_dimension, stats);
 
     // Create application
-    let mut app = ViewerApp::new(state, vertices, indices, backface_indices, max_dimension);
+    let vsync = !no_vsync; // Convert flag: --no-vsync means vsync=false
+    let mut app = ViewerApp::new(state, vertices, indices, backface_indices, max_dimension, vsync);
 
     // Create and run event loop
     let event_loop = EventLoop::new()?;

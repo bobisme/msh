@@ -12,7 +12,7 @@ pub struct GpuState<'window> {
 
 impl<'window> GpuState<'window> {
     /// Create a new GPU state for the given window
-    pub async fn new(window: &'window Window) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn new(window: &'window Window, vsync: bool) -> Result<Self, Box<dyn std::error::Error>> {
         let size = window.inner_size();
 
         // Create instance with Vulkan backend for RenderDoc support
@@ -58,12 +58,18 @@ impl<'window> GpuState<'window> {
             .copied()
             .unwrap_or(surface_caps.formats[0]);
 
+        let present_mode = if vsync {
+            wgpu::PresentMode::Fifo // Vsync on
+        } else {
+            wgpu::PresentMode::Immediate // Vsync off
+        };
+
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             format: surface_format,
             width: size.width,
             height: size.height,
-            present_mode: wgpu::PresentMode::Fifo,
+            present_mode,
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,

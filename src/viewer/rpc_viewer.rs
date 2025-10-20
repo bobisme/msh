@@ -50,6 +50,7 @@ struct RpcViewerApp {
     mouse_pressed_right: bool,
     last_mouse_pos: Option<winit::dpi::PhysicalPosition<f64>>,
     screenshot_path: Option<String>,
+    vsync: bool,
     #[cfg(feature = "renderdoc")]
     renderdoc: RenderDocCapture,
 }
@@ -63,6 +64,7 @@ impl RpcViewerApp {
         indices: Vec<u32>,
         backface_indices: Vec<u32>,
         max_dimension: f32,
+        vsync: bool,
     ) -> Self {
         Self {
             window: None,
@@ -80,6 +82,7 @@ impl RpcViewerApp {
             mouse_pressed_right: false,
             last_mouse_pos: None,
             screenshot_path: None,
+            vsync,
             #[cfg(feature = "renderdoc")]
             renderdoc: RenderDocCapture::new(),
         }
@@ -199,6 +202,20 @@ impl RpcViewerApp {
                                     mesh_renderer.load_mesh(&gpu.device, &self.vertices, &self.indices, &self.backface_indices);
                                 }
 
+                                // Update camera to frame new mesh
+                                if let Some(camera) = self.camera.as_mut() {
+                                    let camera_distance = self.max_dimension * 2.5;
+                                    let eye = na::Point3::new(
+                                        camera_distance * 0.5,
+                                        camera_distance * 0.3,
+                                        camera_distance,
+                                    );
+                                    let target = na::Point3::origin();
+                                    camera.set_position(eye);
+                                    camera.set_target(target);
+                                    println!("Camera repositioned to fit model (dimension: {:.3})", self.max_dimension);
+                                }
+
                                 // Update stats
                                 if let Ok(mut state) = self.state.lock() {
                                     state.stats.vertex_count = mesh.count_vertices();
@@ -245,11 +262,12 @@ impl ApplicationHandler for RpcViewerApp {
 
             // Initialize GPU
             let size = window.inner_size();
+            let vsync = self.vsync;
             let gpu = pollster::block_on(async {
                 let window_ptr: &'static Window = unsafe {
                     std::mem::transmute(&window as &Window)
                 };
-                GpuState::new(window_ptr).await.unwrap()
+                GpuState::new(window_ptr, vsync).await.unwrap()
             });
 
             // Create camera
@@ -466,6 +484,7 @@ impl ApplicationHandler for RpcViewerApp {
 pub fn view_mesh_with_rpc(
     input: Option<&PathBuf>,
     mesh_name: Option<&str>,
+    no_vsync: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (vertices, indices, backface_indices, max_dimension, stats) = if let Some(input_path) = input {
         println!("Loading mesh from {:?}...", input_path);
@@ -578,7 +597,8 @@ pub fn view_mesh_with_rpc(
     let _rpc_handle = spawn_rpc_server(state_clone, command_tx, 9001);
 
     // Create application
-    let mut app = RpcViewerApp::new(state, command_rx, vertices, indices, backface_indices, max_dimension);
+    let vsync = !no_vsync; // Convert flag: --no-vsync means vsync=false
+    let mut app = RpcViewerApp::new(state, command_rx, vertices, indices, backface_indices, max_dimension, vsync);
 
     // Create and run event loop
     let event_loop = EventLoop::new()?;
