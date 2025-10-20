@@ -164,10 +164,8 @@ impl UiRenderer {
             });
         }
 
-        // Queue all sections
-        for section in sections {
-            self.brush.queue(device, queue, vec![section]).unwrap();
-        }
+        // Queue all sections at once
+        self.brush.queue(device, queue, sections).unwrap();
     }
 
     /// Render the UI

@@ -46,6 +46,7 @@ struct RpcViewerApp {
     mouse_pressed_left: bool,
     mouse_pressed_right: bool,
     last_mouse_pos: Option<winit::dpi::PhysicalPosition<f64>>,
+    screenshot_path: Option<String>,
 }
 
 #[cfg(feature = "remote")]
@@ -73,6 +74,7 @@ impl RpcViewerApp {
             mouse_pressed_left: false,
             mouse_pressed_right: false,
             last_mouse_pos: None,
+            screenshot_path: None,
         }
     }
 
@@ -208,12 +210,9 @@ impl RpcViewerApp {
                         }
                     }
                     ViewerCommand::Screenshot { path } => {
-                        if let Some(gpu) = self.gpu.as_ref() {
-                            match gpu.screenshot(&path) {
-                                Ok(_) => println!("Screenshot saved to {}", path),
-                                Err(e) => eprintln!("Failed to save screenshot: {}", e),
-                            }
-                        }
+                        // Schedule screenshot for next frame render
+                        self.screenshot_path = Some(path);
+                        println!("Screenshot will be captured on next frame");
                     }
                     #[cfg(feature = "renderdoc")]
                     ViewerCommand::CaptureFrame { path } => {
@@ -401,7 +400,7 @@ impl ApplicationHandler for RpcViewerApp {
                     // Update uniforms
                     let view_proj = camera.view_projection_matrix();
                     let model = na::Matrix4::identity();
-                    mesh_renderer.update_uniforms(&gpu.queue, &view_proj, &model);
+                    mesh_renderer.update_uniforms(&gpu.queue, &view_proj, &model, &camera.position());
 
                     // Queue UI text
                     if show_ui {
@@ -437,6 +436,15 @@ impl ApplicationHandler for RpcViewerApp {
                             }
 
                             gpu.queue.submit(std::iter::once(encoder.finish()));
+
+                            // Capture screenshot if requested (before present)
+                            if let Some(path) = self.screenshot_path.take() {
+                                match gpu.screenshot_from_texture(&output.texture, &path) {
+                                    Ok(_) => println!("Screenshot saved to {}", path),
+                                    Err(e) => eprintln!("Failed to save screenshot: {}", e),
+                                }
+                            }
+
                             output.present();
                         }
                         Err(e) => {

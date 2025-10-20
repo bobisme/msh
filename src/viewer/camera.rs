@@ -1,5 +1,7 @@
 use nalgebra as na;
 
+const SENSITIVITY_FACTOR: f32 = 0.0005;
+
 /// Arc-ball camera for orbital rotation around a target point
 pub struct ArcBallCamera {
     /// Camera position in world space
@@ -23,13 +25,14 @@ pub struct ArcBallCamera {
 impl ArcBallCamera {
     /// Create a new arc-ball camera
     pub fn new(eye: na::Point3<f32>, target: na::Point3<f32>, width: u32, height: u32) -> Self {
-        let to_target = target - eye;
-        let distance = to_target.norm();
+        let to_eye = eye - target; // Vector FROM target TO eye
+        let distance = to_eye.norm();
 
-        // Calculate initial angles
-        let horizontal_dist = (to_target.x * to_target.x + to_target.z * to_target.z).sqrt();
-        let theta = (-to_target.y).atan2(horizontal_dist);
-        let phi = to_target.x.atan2(to_target.z);
+        // Calculate initial angles based on spherical coordinates
+        // theta is vertical angle (pitch), phi is horizontal angle (yaw)
+        let horizontal_dist = (to_eye.x * to_eye.x + to_eye.z * to_eye.z).sqrt();
+        let theta = (-to_eye.y).atan2(horizontal_dist);
+        let phi = to_eye.x.atan2(to_eye.z);
 
         Self {
             eye,
@@ -62,16 +65,18 @@ impl ArcBallCamera {
     /// Handle mouse drag for rotation
     pub fn rotate(&mut self, delta_x: f32, delta_y: f32) {
         let sensitivity = 0.005;
-        self.phi += delta_x * sensitivity;
-        self.theta = (self.theta - delta_y * sensitivity)
-            .clamp(-std::f32::consts::FRAC_PI_2 + 0.01, std::f32::consts::FRAC_PI_2 - 0.01);
+        self.phi -= delta_x * sensitivity; // Negative so dragging right rotates model right
+        self.theta = (self.theta - delta_y * sensitivity).clamp(
+            -std::f32::consts::FRAC_PI_2 + 0.01,
+            std::f32::consts::FRAC_PI_2 - 0.01,
+        );
 
         self.update_position();
     }
 
     /// Handle mouse drag for panning
     pub fn pan(&mut self, delta_x: f32, delta_y: f32) {
-        let sensitivity = 0.005 * self.distance;
+        let sensitivity = SENSITIVITY_FACTOR * self.distance;
 
         // Calculate right and up vectors in camera space
         let forward = (self.target - self.eye).normalize();

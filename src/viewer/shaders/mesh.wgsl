@@ -3,6 +3,8 @@
 struct Uniforms {
     view_proj: mat4x4<f32>,
     model: mat4x4<f32>,
+    camera_pos: vec3<f32>,
+    _padding: f32,
 };
 
 @group(0) @binding(0)
@@ -34,21 +36,30 @@ struct FragmentInput {
 
 @fragment
 fn fs_main(in: FragmentInput) -> @location(0) vec4<f32> {
-    // Simple lighting calculation
-    let light_dir = normalize(vec3<f32>(0.5, 1.0, 0.5));
-
     // Calculate normal from derivatives (per-pixel)
     let dpdx = dpdx(in.world_position);
     let dpdy = dpdy(in.world_position);
-    let normal = normalize(cross(dpdx, dpdy));
+    let normal = normalize(cross(dpdy, dpdx));
 
-    // Diffuse lighting
-    let diffuse = max(dot(normal, light_dir), 0.0);
-    let ambient = 0.3;
-    let lighting = ambient + diffuse * 0.7;
+    // Lighting setup - two lights for better contrast
+    let light1_dir = normalize(vec3<f32>(0.5, 1.0, 0.5));  // Main light from above
+    let light2_dir = normalize(vec3<f32>(-0.3, -0.5, 0.3)); // Fill light from below
+    let view_dir = normalize(uniforms.camera_pos - in.world_position);
 
-    // Base color (gray)
-    let base_color = vec3<f32>(0.8, 0.8, 0.8);
+    // Diffuse lighting from both lights
+    let diffuse1 = max(dot(normal, light1_dir), 0.0);
+    let diffuse2 = max(dot(normal, light2_dir), 0.0);
+
+    // Specular lighting (Blinn-Phong) from main light only
+    let half_dir = normalize(light1_dir + view_dir);
+    let specular = pow(max(dot(normal, half_dir), 0.0), 32.0);
+
+    // Combine lighting components
+    let ambient = 0.15;
+    let lighting = ambient + diffuse1 * 0.7 + diffuse2 * 0.3 + specular * 0.5;
+
+    // Base color (light gray, slightly warm)
+    let base_color = vec3<f32>(0.85, 0.85, 0.85);
     let color = base_color * lighting;
 
     return vec4<f32>(color, 1.0);
@@ -66,13 +77,24 @@ fn fs_backface(in: FragmentInput) -> @location(0) vec4<f32> {
     // Calculate normal from derivatives
     let dpdx = dpdx(in.world_position);
     let dpdy = dpdy(in.world_position);
-    let normal = normalize(cross(dpdx, dpdy));
+    let normal = normalize(cross(dpdy, dpdx));
 
-    // Simple lighting
-    let light_dir = normalize(vec3<f32>(0.5, 1.0, 0.5));
-    let diffuse = max(dot(normal, light_dir), 0.0);
-    let ambient = 0.3;
-    let lighting = ambient + diffuse * 0.7;
+    // Lighting setup - two lights for better contrast
+    let light1_dir = normalize(vec3<f32>(0.5, 1.0, 0.5));  // Main light from above
+    let light2_dir = normalize(vec3<f32>(-0.3, -0.5, 0.3)); // Fill light from below
+    let view_dir = normalize(uniforms.camera_pos - in.world_position);
+
+    // Diffuse lighting from both lights
+    let diffuse1 = max(dot(normal, light1_dir), 0.0);
+    let diffuse2 = max(dot(normal, light2_dir), 0.0);
+
+    // Specular lighting (Blinn-Phong) from main light only
+    let half_dir = normalize(light1_dir + view_dir);
+    let specular = pow(max(dot(normal, half_dir), 0.0), 32.0);
+
+    // Combine lighting
+    let ambient = 0.15;
+    let lighting = ambient + diffuse1 * 0.7 + diffuse2 * 0.3 + specular * 0.5;
 
     // Red color
     let base_color = vec3<f32>(1.0, 0.0, 0.0);

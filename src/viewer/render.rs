@@ -223,7 +223,7 @@ impl ApplicationHandler for ViewerApp {
                     // Update uniforms
                     let view_proj = camera.view_projection_matrix();
                     let model = na::Matrix4::identity();
-                    mesh_renderer.update_uniforms(&gpu.queue, &view_proj, &model);
+                    mesh_renderer.update_uniforms(&gpu.queue, &view_proj, &model, &camera.position());
 
                     // Queue UI text
                     if self.state.show_ui {

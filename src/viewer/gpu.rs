@@ -59,7 +59,7 @@ impl<'window> GpuState<'window> {
             .unwrap_or(surface_caps.formats[0]);
 
         let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             format: surface_format,
             width: size.width,
             height: size.height,
@@ -89,24 +89,8 @@ impl<'window> GpuState<'window> {
         }
     }
 
-    /// Capture a screenshot from the current surface
-    pub fn screenshot(&self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
-        // Create a texture to copy the surface into
-        let texture_desc = wgpu::TextureDescriptor {
-            label: Some("screenshot_texture"),
-            size: wgpu::Extent3d {
-                width: self.config.width,
-                height: self.config.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: self.config.format,
-            usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        };
-
+    /// Capture a screenshot from a rendered texture
+    pub fn screenshot_from_texture(&self, texture: &wgpu::Texture, path: &str) -> Result<(), Box<dyn std::error::Error>> {
         // Create buffer to read texture data
         let bytes_per_pixel = 4; // RGBA
         let unpadded_bytes_per_row = self.config.width * bytes_per_pixel;
@@ -122,18 +106,15 @@ impl<'window> GpuState<'window> {
             mapped_at_creation: false,
         });
 
-        // Copy surface to texture to buffer
+        // Copy texture to buffer
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("screenshot_encoder"),
             });
 
-        // Get current surface texture
-        let surface_texture = self.surface.get_current_texture()?;
-
         encoder.copy_texture_to_buffer(
-            surface_texture.texture.as_image_copy(),
+            texture.as_image_copy(),
             wgpu::TexelCopyBufferInfo {
                 buffer: &buffer,
                 layout: wgpu::TexelCopyBufferLayout {
@@ -142,7 +123,11 @@ impl<'window> GpuState<'window> {
                     rows_per_image: Some(self.config.height),
                 },
             },
-            texture_desc.size,
+            wgpu::Extent3d {
+                width: self.config.width,
+                height: self.config.height,
+                depth_or_array_layers: 1,
+            },
         );
 
         self.queue.submit(Some(encoder.finish()));

@@ -27,6 +27,8 @@ impl Vertex {
 pub struct Uniforms {
     pub view_proj: [[f32; 4]; 4],
     pub model: [[f32; 4]; 4],
+    pub camera_pos: [f32; 3],
+    pub _padding: f32,
 }
 
 /// Mesh renderer handles rendering of 3D meshes
@@ -77,7 +79,7 @@ impl MeshRenderer {
             label: Some("Mesh Bind Group Layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -323,10 +325,13 @@ impl MeshRenderer {
         queue: &wgpu::Queue,
         view_proj: &na::Matrix4<f32>,
         model: &na::Matrix4<f32>,
+        camera_pos: &na::Point3<f32>,
     ) {
         let uniforms = Uniforms {
             view_proj: (*view_proj).into(),
             model: (*model).into(),
+            camera_pos: [camera_pos.x, camera_pos.y, camera_pos.z],
+            _padding: 0.0,
         };
 
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
@@ -351,9 +356,9 @@ impl MeshRenderer {
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.1,
-                        g: 0.1,
-                        b: 0.1,
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
                         a: 1.0,
                     }),
                     store: wgpu::StoreOp::Store,
