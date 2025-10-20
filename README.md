@@ -20,6 +20,12 @@ A command-line tool for 3D mesh analysis, repair, and visualization. Supports
 cargo install mshmash
 ```
 
+Full features:
+
+```bash
+cargo install mshmash --features remote,renderdoc
+```
+
 ## Usage
 
 ### View a Mesh
@@ -194,6 +200,7 @@ msh view model.obj --remote
 ```
 
 The viewer will start a JSON-RPC server on `http://127.0.0.1:9001` and display:
+
 ```
 ✓ RPC server ready at http://127.0.0.1:9001
   Available methods:
@@ -208,12 +215,14 @@ The viewer will start a JSON-RPC server on `http://127.0.0.1:9001` and display:
 Control the running viewer from another terminal:
 
 **Load a Model**
+
 ```bash
 msh remote load path/to/model.obj
 msh remote load scene.glb --mesh "Body"
 ```
 
 **Rotate the Model**
+
 ```bash
 # Set absolute rotation (Euler angles in radians)
 msh remote rotate 0 1.57 0
@@ -224,6 +233,7 @@ msh remote rotate-axis 1,0,0 1.57r  # 1.57 radians around X axis
 ```
 
 **Control Camera**
+
 ```bash
 # Set camera position
 msh remote camera-pos 5.0 3.0 5.0
@@ -233,6 +243,7 @@ msh remote camera-target 0 0 0
 ```
 
 **Toggle Display Options**
+
 ```bash
 # Wireframe
 msh remote enable-wireframe
@@ -251,10 +262,13 @@ msh remote toggle-ui
 ```
 
 **Get Mesh Statistics**
+
 ```bash
 msh remote stats
 ```
+
 Output:
+
 ```
 === Mesh Statistics ===
 Vertices:  1234
@@ -264,6 +278,7 @@ Manifold:  Yes
 ```
 
 **Take Screenshot**
+
 ```bash
 msh remote screenshot output.png
 msh remote screenshot captures/view.png    # Creates 'captures' dir if needed
@@ -271,12 +286,14 @@ msh remote screenshot deep/nested/dirs/shot.png  # Creates all parent dirs
 ```
 
 **Capture Frame (RenderDoc)**
+
 ```bash
 msh remote capture
 msh remote capture /path/to/save.rdc
 ```
 
 **Quit the Viewer**
+
 ```bash
 msh remote quit
 ```
@@ -296,6 +313,7 @@ cargo build --features remote,renderdoc
 #### Capture Frames
 
 **Launch with RenderDoc:**
+
 ```bash
 # Build with RenderDoc support
 cargo build --features renderdoc --release
@@ -309,6 +327,7 @@ qrenderdoc  # Then use GUI: File -> Launch Application
 When launched through RenderDoc, F12 will capture frames (injected by RenderDoc).
 
 **Via Remote Control:**
+
 ```bash
 # Terminal 1: Launch with both features
 cargo build --features remote,renderdoc --release
@@ -321,6 +340,7 @@ msh remote capture "/tmp/debug/mesh_analysis"    # Absolute path
 ```
 
 The path parameter sets RenderDoc's capture file path template:
+
 - **Relative paths** are resolved from your current working directory (where you run `msh remote`)
 - **Absolute paths** are used as-is
 - RenderDoc appends a timestamp and `.rdc` extension to the final file
@@ -336,6 +356,7 @@ The remote control system supports flexible angle notation:
 - **No unit** (interpreted as radians): `1.57`, `3.14`
 
 Examples:
+
 ```bash
 msh remote rotate-axis 0,1,0 90d      # Quarter turn
 msh remote rotate-axis 1,0,0 180d    # Half turn
@@ -365,6 +386,7 @@ msh remote stats                            # Get mesh info
 ```
 
 **With RenderDoc for GPU debugging:**
+
 ```bash
 # Terminal 1: Start with RenderDoc
 renderdoccmd msh view model.obj --remote
@@ -375,6 +397,7 @@ msh remote capture "analysis/mesh"               # GPU-level capture (.rdc)
 ```
 
 **Note:**
+
 - Launch with `renderdoccmd` to enable frame capture. Without it, `msh remote capture` will report that RenderDoc is not available.
 - Relative paths are resolved from your current directory, so if you're in `/home/user/projects/models/`, the path `"captures/front_view.png"` becomes `/home/user/projects/models/captures/front_view.png`.
 - Parent directories are automatically created for screenshots, so `"output/shots/view.png"` will create the `output/shots/` directory structure if it doesn't exist.
@@ -390,6 +413,7 @@ curl -X POST http://127.0.0.1:9001 \
 ```
 
 Available methods:
+
 - `load_model(path: String, mesh_name: Option<String>)`
 - `set_rotation(x: f32, y: f32, z: f32)`
 - `rotate_around_axis(axis: Vec<f32>, angle: String)`
