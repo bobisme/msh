@@ -28,45 +28,53 @@ use crate::rpc::spawn_rpc_server;
 
 #[cfg(feature = "remote")]
 pub async fn view_mesh_with_rpc(
-    input: &PathBuf,
+    input: Option<&PathBuf>,
     mesh_name: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Loading mesh from {:?}...", input);
+    let (initial_mesh, max_dimension, stats) = if let Some(input_path) = input {
+        println!("Loading mesh from {:?}...", input_path);
 
-    // Load initial mesh
-    let mesh = load_mesh(input, mesh_name)?;
+        // Load initial mesh
+        let mesh = load_mesh(input_path, mesh_name)?;
 
-    // Calculate mesh statistics
-    let vertex_count = mesh.count_vertices();
-    let face_count = mesh.count_faces();
-    let edge_count = mesh.unique_edges().count();
-    let boundary_rings = mesh.boundary_rings();
-    let is_manifold = boundary_rings.is_empty();
+        // Calculate mesh statistics
+        let vertex_count = mesh.count_vertices();
+        let face_count = mesh.count_faces();
+        let edge_count = mesh.unique_edges().count();
+        let boundary_rings = mesh.boundary_rings();
+        let is_manifold = boundary_rings.is_empty();
 
-    let stats = MeshStats {
-        vertex_count,
-        edge_count,
-        face_count,
-        is_manifold,
-        hole_count: boundary_rings.len(),
+        let stats = MeshStats {
+            vertex_count,
+            edge_count,
+            face_count,
+            is_manifold,
+            hole_count: boundary_rings.len(),
+        };
+
+        // Calculate bounding box
+        let mut min = [f32::INFINITY, f32::INFINITY, f32::INFINITY];
+        let mut max = [f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
+
+        for vertex_id in mesh.vertices() {
+            let pos = mesh.vertex_position(vertex_id);
+            min[0] = min[0].min(pos.x);
+            min[1] = min[1].min(pos.y);
+            min[2] = min[2].min(pos.z);
+            max[0] = max[0].max(pos.x);
+            max[1] = max[1].max(pos.y);
+            max[2] = max[2].max(pos.z);
+        }
+
+        let size = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
+        let max_dimension = size[0].max(size[1]).max(size[2]);
+
+        (Some(mesh), max_dimension, stats)
+    } else {
+        println!("Starting viewer without initial mesh (use 'msh remote load' to load a mesh)...");
+        // No initial mesh - start with empty viewer
+        (None, 1.0, MeshStats::default())
     };
-
-    // Calculate bounding box
-    let mut min = [f32::INFINITY, f32::INFINITY, f32::INFINITY];
-    let mut max = [f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
-
-    for vertex_id in mesh.vertices() {
-        let pos = mesh.vertex_position(vertex_id);
-        min[0] = min[0].min(pos.x);
-        min[1] = min[1].min(pos.y);
-        min[2] = min[2].min(pos.z);
-        max[0] = max[0].max(pos.x);
-        max[1] = max[1].max(pos.y);
-        max[2] = max[2].max(pos.z);
-    }
-
-    let size = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
-    let max_dimension = size[0].max(size[1]).max(size[2]);
 
     // Create shared state
     let state = Arc::new(Mutex::new(ViewerState::for_mesh(max_dimension, stats)));
@@ -80,81 +88,96 @@ pub async fn view_mesh_with_rpc(
     let _rpc_handle = spawn_rpc_server(state_clone, command_tx, 9001);
 
     // Run viewer with command processing
-    run_viewer_with_commands(mesh, state, command_rx, max_dimension).await?;
+    run_viewer_with_commands(initial_mesh, state, command_rx, max_dimension).await?;
 
     Ok(())
 }
 
 #[cfg(feature = "remote")]
 async fn run_viewer_with_commands(
-    initial_mesh: baby_shark::mesh::corner_table::CornerTableF,
+    initial_mesh: Option<baby_shark::mesh::corner_table::CornerTableF>,
     state: Arc<Mutex<ViewerState>>,
     command_rx: Receiver<ViewerCommand>,
     initial_max_dimension: f32,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use baby_shark::io::write_to_file;
+    // Extract geometry if initial mesh is provided
+    let (vertices, indices, reversed_indices) = if let Some(ref mesh) = initial_mesh {
+        use baby_shark::io::write_to_file;
 
-    // Write to temporary OBJ file
-    let temp_obj = std::env::temp_dir().join("msh_temp_view.obj");
-    write_to_file(&initial_mesh, &temp_obj)
-        .map_err(|e| format!("Failed to write temp mesh: {:?}", e))?;
+        // Write to temporary OBJ file
+        let temp_obj = std::env::temp_dir().join("msh_temp_view.obj");
+        write_to_file(mesh, &temp_obj)
+            .map_err(|e| format!("Failed to write temp mesh: {:?}", e))?;
 
-    // Calculate center for initial mesh
-    let mut min = [f32::INFINITY, f32::INFINITY, f32::INFINITY];
-    let mut max = [f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
+        // Calculate center for initial mesh
+        let mut min = [f32::INFINITY, f32::INFINITY, f32::INFINITY];
+        let mut max = [f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
 
-    for vertex_id in initial_mesh.vertices() {
-        let pos = initial_mesh.vertex_position(vertex_id);
-        min[0] = min[0].min(pos.x);
-        min[1] = min[1].min(pos.y);
-        min[2] = min[2].min(pos.z);
-        max[0] = max[0].max(pos.x);
-        max[1] = max[1].max(pos.y);
-        max[2] = max[2].max(pos.z);
-    }
+        for vertex_id in mesh.vertices() {
+            let pos = mesh.vertex_position(vertex_id);
+            min[0] = min[0].min(pos.x);
+            min[1] = min[1].min(pos.y);
+            min[2] = min[2].min(pos.z);
+            max[0] = max[0].max(pos.x);
+            max[1] = max[1].max(pos.y);
+            max[2] = max[2].max(pos.z);
+        }
 
-    let center = [
-        (min[0] + max[0]) / 2.0,
-        (min[1] + max[1]) / 2.0,
-        (min[2] + max[2]) / 2.0,
-    ];
+        let center = [
+            (min[0] + max[0]) / 2.0,
+            (min[1] + max[1]) / 2.0,
+            (min[2] + max[2]) / 2.0,
+        ];
 
-    // Extract geometry
-    let mut vertices: Vec<na::Point3<f32>> = Vec::new();
-    let mut indices: Vec<na::Point3<u32>> = Vec::new();
-    let mut vertex_idx = 0u32;
+        // Extract geometry
+        let mut vertices: Vec<na::Point3<f32>> = Vec::new();
+        let mut indices: Vec<na::Point3<u32>> = Vec::new();
+        let mut vertex_idx = 0u32;
 
-    for face_id in initial_mesh.faces() {
-        let triangle = initial_mesh.face_positions(face_id);
-        let v0 = triangle.p1();
-        let v1 = triangle.p2();
-        let v2 = triangle.p3();
+        for face_id in mesh.faces() {
+            let triangle = mesh.face_positions(face_id);
+            let v0 = triangle.p1();
+            let v1 = triangle.p2();
+            let v2 = triangle.p3();
 
-        vertices.push(na::Point3::new(
-            v0.x - center[0],
-            v0.y - center[1],
-            v0.z - center[2],
-        ));
-        vertices.push(na::Point3::new(
-            v1.x - center[0],
-            v1.y - center[1],
-            v1.z - center[2],
-        ));
-        vertices.push(na::Point3::new(
-            v2.x - center[0],
-            v2.y - center[1],
-            v2.z - center[2],
-        ));
+            vertices.push(na::Point3::new(
+                v0.x - center[0],
+                v0.y - center[1],
+                v0.z - center[2],
+            ));
+            vertices.push(na::Point3::new(
+                v1.x - center[0],
+                v1.y - center[1],
+                v1.z - center[2],
+            ));
+            vertices.push(na::Point3::new(
+                v2.x - center[0],
+                v2.y - center[1],
+                v2.z - center[2],
+            ));
 
-        indices.push(na::Point3::new(vertex_idx, vertex_idx + 1, vertex_idx + 2));
-        vertex_idx += 3;
-    }
+            indices.push(na::Point3::new(vertex_idx, vertex_idx + 1, vertex_idx + 2));
+            vertex_idx += 3;
+        }
 
-    // Create reversed mesh for backfaces
-    let mut reversed_indices: Vec<na::Point3<u32>> = Vec::new();
-    for tri in &indices {
-        reversed_indices.push(na::Point3::new(tri.x, tri.z, tri.y));
-    }
+        // Create reversed mesh for backfaces
+        let mut reversed_indices: Vec<na::Point3<u32>> = Vec::new();
+        for tri in &indices {
+            reversed_indices.push(na::Point3::new(tri.x, tri.z, tri.y));
+        }
+
+        (vertices, indices, reversed_indices)
+    } else {
+        // Start with empty geometry (single degenerate triangle to avoid errors)
+        let vertices = vec![
+            na::Point3::new(0.0, 0.0, 0.0),
+            na::Point3::new(0.0, 0.0, 0.0),
+            na::Point3::new(0.0, 0.0, 0.0),
+        ];
+        let indices = vec![na::Point3::new(0, 1, 2)];
+        let reversed_indices = vec![na::Point3::new(0, 2, 1)];
+        (vertices, indices, reversed_indices)
+    };
 
     println!("Creating viewer window with RPC server enabled...");
     let mut window = Window::new("Mesh Viewer - msh (RPC Enabled)");
@@ -279,9 +302,160 @@ async fn run_viewer_with_commands(
                     println!("UI: {}", if enabled { "ON" } else { "OFF" });
                 }
                 ViewerCommand::LoadModel { path, mesh_name } => {
-                    println!("Load model command received, but not yet fully implemented");
-                    println!("  Path: {:?}, Mesh: {:?}", path, mesh_name);
-                    // TODO: Implement dynamic mesh loading
+                    println!("Loading model from {:?}...", path);
+
+                    // Load the new mesh
+                    match load_mesh(&path, mesh_name.as_deref()) {
+                        Ok(new_mesh) => {
+                            // Calculate mesh statistics
+                            let vertex_count = new_mesh.count_vertices();
+                            let face_count = new_mesh.count_faces();
+                            let edge_count = new_mesh.unique_edges().count();
+                            let boundary_rings = new_mesh.boundary_rings();
+                            let is_manifold = boundary_rings.is_empty();
+
+                            let new_stats = MeshStats {
+                                vertex_count,
+                                edge_count,
+                                face_count,
+                                is_manifold,
+                                hole_count: boundary_rings.len(),
+                            };
+
+                            // Calculate bounding box
+                            let mut min = [f32::INFINITY, f32::INFINITY, f32::INFINITY];
+                            let mut max = [f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
+
+                            for vertex_id in new_mesh.vertices() {
+                                let pos = new_mesh.vertex_position(vertex_id);
+                                min[0] = min[0].min(pos.x);
+                                min[1] = min[1].min(pos.y);
+                                min[2] = min[2].min(pos.z);
+                                max[0] = max[0].max(pos.x);
+                                max[1] = max[1].max(pos.y);
+                                max[2] = max[2].max(pos.z);
+                            }
+
+                            let center = [
+                                (min[0] + max[0]) / 2.0,
+                                (min[1] + max[1]) / 2.0,
+                                (min[2] + max[2]) / 2.0,
+                            ];
+
+                            let size = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
+                            let new_max_dimension = size[0].max(size[1]).max(size[2]);
+
+                            // Extract geometry
+                            let mut new_vertices: Vec<na::Point3<f32>> = Vec::new();
+                            let mut new_indices: Vec<na::Point3<u32>> = Vec::new();
+                            let mut vertex_idx = 0u32;
+
+                            for face_id in new_mesh.faces() {
+                                let triangle = new_mesh.face_positions(face_id);
+                                let v0 = triangle.p1();
+                                let v1 = triangle.p2();
+                                let v2 = triangle.p3();
+
+                                new_vertices.push(na::Point3::new(
+                                    v0.x - center[0],
+                                    v0.y - center[1],
+                                    v0.z - center[2],
+                                ));
+                                new_vertices.push(na::Point3::new(
+                                    v1.x - center[0],
+                                    v1.y - center[1],
+                                    v1.z - center[2],
+                                ));
+                                new_vertices.push(na::Point3::new(
+                                    v2.x - center[0],
+                                    v2.y - center[1],
+                                    v2.z - center[2],
+                                ));
+
+                                new_indices.push(na::Point3::new(vertex_idx, vertex_idx + 1, vertex_idx + 2));
+                                vertex_idx += 3;
+                            }
+
+                            // Create reversed indices for backfaces
+                            let mut new_reversed_indices: Vec<na::Point3<u32>> = Vec::new();
+                            for tri in &new_indices {
+                                new_reversed_indices.push(na::Point3::new(tri.x, tri.z, tri.y));
+                            }
+
+                            // Remove old meshes
+                            window.remove_node(&mut mesh_obj);
+                            window.remove_node(&mut backface_obj);
+
+                            // Create new GPU meshes
+                            let new_mesh_rc = Rc::new(RefCell::new(kiss3d::resource::GpuMesh::new(
+                                new_vertices.clone(),
+                                new_indices,
+                                None,
+                                None,
+                                false,
+                            )));
+
+                            mesh_obj = window.add_mesh(new_mesh_rc, na::Vector3::new(1.0, 1.0, 1.0));
+                            mesh_obj.set_color(0.8, 0.8, 0.8);
+                            mesh_obj.enable_backface_culling(true);
+
+                            // Apply current wireframe state
+                            let st = state.lock().unwrap();
+                            if st.show_wireframe {
+                                mesh_obj.set_lines_width(1.0);
+                                mesh_obj.set_lines_color(Some(na::Point3::new(0.0, 0.0, 0.0)));
+                            } else {
+                                mesh_obj.set_lines_width(0.0);
+                            }
+                            mesh_obj.set_surface_rendering_activation(true);
+
+                            // Create new backface mesh
+                            let new_backface_mesh_rc = Rc::new(RefCell::new(kiss3d::resource::GpuMesh::new(
+                                new_vertices,
+                                new_reversed_indices,
+                                None,
+                                None,
+                                false,
+                            )));
+
+                            backface_obj = window.add_mesh(new_backface_mesh_rc, na::Vector3::new(1.0, 1.0, 1.0));
+                            backface_obj.set_color(1.0, 0.0, 0.0);
+                            backface_obj.enable_backface_culling(true);
+                            backface_obj.set_visible(st.show_backfaces);
+
+                            // Apply current rotation
+                            let rot = na::UnitQuaternion::from_euler_angles(
+                                st.model_rotation.x,
+                                st.model_rotation.y,
+                                st.model_rotation.z,
+                            );
+                            mesh_obj.set_local_rotation(rot);
+                            backface_obj.set_local_rotation(rot);
+                            drop(st);
+
+                            // Update camera to frame new mesh
+                            let camera_distance = new_max_dimension * 2.5;
+                            let new_eye = na::Point3::new(
+                                camera_distance * 0.5,
+                                camera_distance * 0.3,
+                                camera_distance,
+                            );
+                            let new_at = na::Point3::new(0.0, 0.0, 0.0);
+                            arc_ball = kiss3d::camera::ArcBall::new(new_eye, new_at);
+
+                            // Update state
+                            let mut st = state.lock().unwrap();
+                            st.stats = new_stats;
+                            st.camera_position = new_eye;
+                            st.camera_target = new_at;
+                            drop(st);
+
+                            println!("✓ Model loaded successfully: {} vertices, {} faces", vertex_count, face_count);
+                        }
+                        Err(e) => {
+                            eprintln!("❌ Failed to load model: {}", e);
+                        }
+                    }
                 }
                 #[cfg(feature = "renderdoc")]
                 ViewerCommand::CaptureFrame { path } => {

@@ -131,7 +131,13 @@ enum Commands {
 
     /// View mesh in a 3D viewer
     View {
+        /// Input mesh file (.obj or .glb) - optional when using --remote
+        #[cfg(feature = "remote")]
+        #[arg(required_unless_present = "remote")]
+        input: Option<PathBuf>,
+
         /// Input mesh file (.obj or .glb)
+        #[cfg(not(feature = "remote"))]
         input: PathBuf,
 
         /// Mesh name (required if GLB contains multiple meshes)
@@ -401,13 +407,16 @@ async fn main() {
             #[cfg(feature = "remote")]
             {
                 if remote {
-                    if let Err(e) = viewer::view_mesh_with_rpc(&input, mesh.as_deref()).await {
+                    if let Err(e) = viewer::view_mesh_with_rpc(input.as_ref(), mesh.as_deref()).await {
                         eprintln!("Error viewing mesh: {}", e);
                         std::process::exit(1);
                     }
-                } else if let Err(e) = viewer::view_mesh(&input, mesh.as_deref()).await {
-                    eprintln!("Error viewing mesh: {}", e);
-                    std::process::exit(1);
+                } else {
+                    let input_ref = input.as_ref().expect("input required when not using --remote");
+                    if let Err(e) = viewer::view_mesh(input_ref, mesh.as_deref()).await {
+                        eprintln!("Error viewing mesh: {}", e);
+                        std::process::exit(1);
+                    }
                 }
             }
             #[cfg(not(feature = "remote"))]
