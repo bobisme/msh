@@ -1,4 +1,4 @@
-use kiss3d::nalgebra as na;
+use nalgebra as na;
 use std::path::PathBuf;
 
 /// Thread-safe viewer state that can be shared between RPC and render threads

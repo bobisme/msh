@@ -1,30 +1,300 @@
-use kiss3d::event::{Action, Key};
-use kiss3d::light::Light;
-use kiss3d::nalgebra as na;
-use kiss3d::text::Font;
-use kiss3d::window::Window;
-use std::cell::RefCell;
+use nalgebra as na;
 use std::path::PathBuf;
-use std::rc::Rc;
-use std::sync::Arc;
+use winit::{
+    application::ApplicationHandler,
+    event::*,
+    event_loop::{ActiveEventLoop, EventLoop},
+    keyboard::{KeyCode, PhysicalKey},
+    window::{Window, WindowId},
+};
 
 use crate::mesh::loader::load_mesh;
 
-pub async fn view_mesh(
+use super::{
+    camera::ArcBallCamera,
+    gpu::GpuState,
+    mesh_renderer::MeshRenderer,
+    state::{MeshStats, ViewerState},
+    ui_renderer::UiRenderer,
+};
+
+/// Application state for the viewer
+struct ViewerApp {
+    window: Option<Window>,
+    gpu: Option<GpuState<'static>>,
+    camera: Option<ArcBallCamera>,
+    mesh_renderer: Option<MeshRenderer>,
+    ui_renderer: Option<UiRenderer>,
+    state: ViewerState,
+    vertices: Vec<na::Point3<f32>>,
+    indices: Vec<u32>,
+    backface_indices: Vec<u32>,
+    max_dimension: f32,
+    mouse_pressed_left: bool,
+    mouse_pressed_right: bool,
+    last_mouse_pos: Option<winit::dpi::PhysicalPosition<f64>>,
+}
+
+impl ViewerApp {
+    fn new(
+        state: ViewerState,
+        vertices: Vec<na::Point3<f32>>,
+        indices: Vec<u32>,
+        backface_indices: Vec<u32>,
+        max_dimension: f32,
+    ) -> Self {
+        Self {
+            window: None,
+            gpu: None,
+            camera: None,
+            mesh_renderer: None,
+            ui_renderer: None,
+            state,
+            vertices,
+            indices,
+            backface_indices,
+            max_dimension,
+            mouse_pressed_left: false,
+            mouse_pressed_right: false,
+            last_mouse_pos: None,
+        }
+    }
+}
+
+impl ApplicationHandler for ViewerApp {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        // Window creation and GPU initialization happens here in winit 0.30
+        if self.window.is_none() {
+            let window_attributes = Window::default_attributes()
+                .with_title("Mesh Viewer - msh");
+            let window = event_loop.create_window(window_attributes).unwrap();
+
+            // Initialize GPU - use pollster to block on async init
+            let size = window.inner_size();
+            let gpu = pollster::block_on(async {
+                // SAFETY: The window lives as long as ViewerApp, and we ensure
+                // the surface (which borrows the window) is dropped before the window
+                let window_ptr: &'static Window = unsafe {
+                    std::mem::transmute(&window as &Window)
+                };
+                GpuState::new(window_ptr).await.unwrap()
+            });
+
+            // Create camera
+            let camera_distance = self.max_dimension * 2.5;
+            let eye = na::Point3::new(
+                camera_distance * 0.5,
+                camera_distance * 0.3,
+                camera_distance,
+            );
+            let target = na::Point3::origin();
+            let camera = ArcBallCamera::new(eye, target, size.width, size.height);
+
+            // Create mesh renderer
+            let mut mesh_renderer = MeshRenderer::new(&gpu.device, &gpu.config);
+            mesh_renderer.load_mesh(&gpu.device, &self.vertices, &self.indices, &self.backface_indices);
+
+            // Create UI renderer
+            let ui_renderer = UiRenderer::new(&gpu.device, &gpu.queue, &gpu.config);
+
+            self.gpu = Some(gpu);
+            self.camera = Some(camera);
+            self.mesh_renderer = Some(mesh_renderer);
+            self.ui_renderer = Some(ui_renderer);
+            self.window = Some(window);
+
+            println!("Viewing mesh...");
+            println!("  Mouse: Rotate (drag), Zoom (scroll), Pan (right-drag)");
+            println!("  W: Toggle wireframe overlay");
+            println!("  B: Toggle backface visualization (red)");
+            println!("  U: Toggle UI overlay");
+            println!("  Q/ESC: Exit");
+        }
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        match event {
+            WindowEvent::CloseRequested => {
+                event_loop.exit();
+            }
+            WindowEvent::Resized(new_size) => {
+                if let (Some(gpu), Some(mesh_renderer), Some(ui_renderer), Some(camera)) = (
+                    self.gpu.as_mut(),
+                    self.mesh_renderer.as_mut(),
+                    self.ui_renderer.as_mut(),
+                    self.camera.as_mut(),
+                ) {
+                    gpu.resize(new_size);
+                    mesh_renderer.resize(&gpu.device, &gpu.config);
+                    ui_renderer.resize(&gpu.device, &gpu.queue, new_size.width, new_size.height);
+                    camera.resize(new_size.width, new_size.height);
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if event.state == ElementState::Pressed {
+                    if let PhysicalKey::Code(keycode) = event.physical_key {
+                        match keycode {
+                            KeyCode::KeyW => {
+                                self.state.show_wireframe = !self.state.show_wireframe;
+                                println!(
+                                    "Wireframe: {}",
+                                    if self.state.show_wireframe { "ON" } else { "OFF" }
+                                );
+                            }
+                            KeyCode::KeyB => {
+                                self.state.show_backfaces = !self.state.show_backfaces;
+                                println!(
+                                    "Backface visualization: {}",
+                                    if self.state.show_backfaces {
+                                        "ON (red)"
+                                    } else {
+                                        "OFF"
+                                    }
+                                );
+                            }
+                            KeyCode::KeyU => {
+                                self.state.show_ui = !self.state.show_ui;
+                                println!("UI overlay: {}", if self.state.show_ui { "ON" } else { "OFF" });
+                            }
+                            KeyCode::KeyQ | KeyCode::Escape => {
+                                event_loop.exit();
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            WindowEvent::MouseInput { state: btn_state, button, .. } => {
+                match button {
+                    MouseButton::Left => {
+                        self.mouse_pressed_left = btn_state == ElementState::Pressed;
+                        if !self.mouse_pressed_left {
+                            self.last_mouse_pos = None;
+                        }
+                    }
+                    MouseButton::Right => {
+                        self.mouse_pressed_right = btn_state == ElementState::Pressed;
+                        if !self.mouse_pressed_right {
+                            self.last_mouse_pos = None;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                if let Some(camera) = self.camera.as_mut() {
+                    if let Some(last_pos) = self.last_mouse_pos {
+                        let delta_x = position.x - last_pos.x;
+                        let delta_y = position.y - last_pos.y;
+
+                        if self.mouse_pressed_left {
+                            camera.rotate(delta_x as f32, delta_y as f32);
+                        } else if self.mouse_pressed_right {
+                            camera.pan(delta_x as f32, delta_y as f32);
+                        }
+                    }
+                    if self.mouse_pressed_left || self.mouse_pressed_right {
+                        self.last_mouse_pos = Some(position);
+                    }
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if let Some(camera) = self.camera.as_mut() {
+                    let scroll_delta = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => y,
+                        MouseScrollDelta::PixelDelta(pos) => (pos.y / 100.0) as f32,
+                    };
+                    camera.zoom(scroll_delta);
+                }
+            }
+            WindowEvent::RedrawRequested => {
+                if let (Some(window), Some(gpu), Some(camera), Some(mesh_renderer), Some(ui_renderer)) = (
+                    self.window.as_ref(),
+                    self.gpu.as_mut(),
+                    self.camera.as_ref(),
+                    self.mesh_renderer.as_mut(),
+                    self.ui_renderer.as_mut(),
+                ) {
+                    // Update uniforms
+                    let view_proj = camera.view_projection_matrix();
+                    let model = na::Matrix4::identity();
+                    mesh_renderer.update_uniforms(&gpu.queue, &view_proj, &model, &camera.position());
+
+                    // Queue UI text
+                    if self.state.show_ui {
+                        ui_renderer.queue_text(&gpu.device, &gpu.queue, &self.state, false);
+                    }
+
+                    // Render
+                    match gpu.surface.get_current_texture() {
+                        Ok(output) => {
+                            let view = output
+                                .texture
+                                .create_view(&wgpu::TextureViewDescriptor::default());
+
+                            let mut encoder = gpu
+                                .device
+                                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                                    label: Some("Render Encoder"),
+                                });
+
+                            // Render mesh
+                            mesh_renderer.render(
+                                &mut encoder,
+                                &view,
+                                self.state.show_wireframe,
+                                self.state.show_backfaces,
+                            );
+
+                            // Render UI
+                            if self.state.show_ui {
+                                ui_renderer.render(&mut encoder, &view);
+                            }
+
+                            gpu.queue.submit(std::iter::once(encoder.finish()));
+                            output.present();
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to get surface texture: {:?}", e);
+                        }
+                    }
+
+                    window.request_redraw();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+pub fn view_mesh(
     input: &PathBuf,
     mesh_name: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Loading mesh from {:?}...", input);
 
-    // Load mesh through baby_shark, export to temp OBJ, then load with kiss3d's OBJ loader
+    // Load mesh through baby_shark
     let mesh = load_mesh(input, mesh_name)?;
 
-    // Write to temporary OBJ file
-    let temp_obj = std::env::temp_dir().join("msh_temp_view.obj");
-    println!("Converting to OBJ format...");
+    // Calculate mesh statistics
+    let vertex_count = mesh.count_vertices();
+    let face_count = mesh.count_faces();
+    let edge_count = mesh.unique_edges().count();
+    let boundary_rings = mesh.boundary_rings();
+    let is_manifold = boundary_rings.is_empty();
 
-    use baby_shark::io::write_to_file;
-    write_to_file(&mesh, &temp_obj).map_err(|e| format!("Failed to write temp mesh: {:?}", e))?;
+    let stats = MeshStats {
+        vertex_count,
+        edge_count,
+        face_count,
+        is_manifold,
+        hole_count: boundary_rings.len(),
+    };
 
     // Calculate bounding box to center and scale the mesh
     let mut min = [f32::INFINITY, f32::INFINITY, f32::INFINITY];
@@ -47,7 +317,6 @@ pub async fn view_mesh(
     ];
 
     let size = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
-
     let max_dimension = size[0].max(size[1]).max(size[2]);
 
     println!(
@@ -60,9 +329,9 @@ pub async fn view_mesh(
     );
     println!("Mesh size: {:.3}", max_dimension);
 
-    // Extract as triangle soup (no vertex sharing) to avoid any indexing issues
+    // Extract as triangle soup (no vertex sharing)
     let mut vertices: Vec<na::Point3<f32>> = Vec::new();
-    let mut indices: Vec<na::Point3<u32>> = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
 
     let mut vertex_idx = 0u32;
 
@@ -72,7 +341,7 @@ pub async fn view_mesh(
         // Get the three vertices of the triangle
         let v0 = triangle.p1();
         let v1 = triangle.p2();
-        let v3 = triangle.p3();
+        let v2 = triangle.p3();
 
         // Add vertices directly (centered)
         vertices.push(na::Point3::new(
@@ -86,294 +355,42 @@ pub async fn view_mesh(
             v1.z - center[2],
         ));
         vertices.push(na::Point3::new(
-            v3.x - center[0],
-            v3.y - center[1],
-            v3.z - center[2],
+            v2.x - center[0],
+            v2.y - center[1],
+            v2.z - center[2],
         ));
 
         // Create triangle with sequential indices
-        indices.push(na::Point3::new(vertex_idx, vertex_idx + 1, vertex_idx + 2));
+        indices.push(vertex_idx);
+        indices.push(vertex_idx + 1);
+        indices.push(vertex_idx + 2);
         vertex_idx += 3;
     }
 
     println!(
         "Extracted {} vertices ({} triangles) as triangle soup",
         vertices.len(),
-        indices.len()
+        indices.len() / 3
     );
 
-    // Calculate mesh statistics for overlay
-    let vertex_count = mesh.count_vertices();
-    let face_count = mesh.count_faces();
-    let edge_count = mesh.unique_edges().count();
-    let boundary_rings = mesh.boundary_rings();
-    let is_manifold = boundary_rings.is_empty();
-
-    // Create reversed mesh for backface visualization (flip winding)
-    let mut reversed_indices: Vec<na::Point3<u32>> = Vec::new();
-    for tri in &indices {
+    // Create reversed indices for backface visualization
+    let mut backface_indices: Vec<u32> = Vec::new();
+    for i in (0..indices.len()).step_by(3) {
         // Reverse winding order: (v0, v1, v2) -> (v0, v2, v1)
-        reversed_indices.push(na::Point3::new(tri.x, tri.z, tri.y));
+        backface_indices.push(indices[i]);
+        backface_indices.push(indices[i + 2]);
+        backface_indices.push(indices[i + 1]);
     }
 
-    println!("Creating viewer window...");
-    let mut window = Window::new("Mesh Viewer - msh");
-    window.set_light(Light::StickToCamera);
+    // Create viewer state
+    let state = ViewerState::for_mesh(max_dimension, stats);
 
-    // Main mesh (front faces)
-    let mesh_rc = Rc::new(RefCell::new(kiss3d::resource::GpuMesh::new(
-        vertices.clone(),
-        indices,
-        None,
-        None,
-        false,
-    )));
+    // Create application
+    let mut app = ViewerApp::new(state, vertices, indices, backface_indices, max_dimension);
 
-    let mut mesh_obj = window.add_mesh(mesh_rc, na::Vector3::new(1.0, 1.0, 1.0));
-
-    mesh_obj.set_color(0.8, 0.8, 0.8);
-    mesh_obj.enable_backface_culling(true); // Always cull backfaces on main mesh
-
-    // Wireframe overlay disabled by default
-    mesh_obj.set_lines_width(0.0);
-    mesh_obj.set_surface_rendering_activation(true);
-
-    // Backface mesh (reversed, red) - hidden by default
-    let backface_mesh_rc = Rc::new(RefCell::new(kiss3d::resource::GpuMesh::new(
-        vertices,
-        reversed_indices,
-        None,
-        None,
-        false,
-    )));
-
-    let mut backface_obj = window.add_mesh(backface_mesh_rc, na::Vector3::new(1.0, 1.0, 1.0));
-
-    backface_obj.set_color(1.0, 0.0, 0.0); // Red
-    backface_obj.enable_backface_culling(true); // Cull backfaces on reversed mesh too
-    backface_obj.set_visible(false); // Hidden by default
-
-    // Set camera to look at the centered mesh from a good distance
-    let camera_distance = max_dimension * 2.5;
-    let eye = na::Point3::new(
-        camera_distance * 0.5,
-        camera_distance * 0.3,
-        camera_distance,
-    );
-    let at = na::Point3::new(0.0, 0.0, 0.0);
-    let mut arc_ball = kiss3d::camera::ArcBall::new(eye, at);
-
-    // State for interactive controls
-    let mut show_wireframe = false; // Off by default
-    let mut show_backfaces = false;
-    let mut show_ui = true; // On by default
-
-    println!("Viewing mesh...");
-    println!("  Mouse: Rotate (drag), Zoom (scroll), Pan (right-drag)");
-    println!("  W: Toggle wireframe overlay");
-    println!("  B: Toggle backface visualization (red)");
-    println!("  U: Toggle UI overlay");
-    println!("  Q/ESC: Exit");
-
-    // Load font for text rendering (use built-in font)
-    let font = Arc::new(Font::default());
-
-    while window.render_with_camera(&mut arc_ball).await {
-        // Draw UI overlay only if enabled
-        if show_ui {
-            draw_ui_overlay(
-                &mut window,
-                &font,
-                vertex_count,
-                edge_count,
-                face_count,
-                is_manifold,
-                boundary_rings.len(),
-            );
-        }
-
-        // Handle keyboard input
-        for event in window.events().iter() {
-            match event.value {
-                kiss3d::event::WindowEvent::Key(Key::W, Action::Press, _) => {
-                    show_wireframe = !show_wireframe;
-                    if show_wireframe {
-                        mesh_obj.set_lines_width(1.0);
-                        mesh_obj.set_lines_color(Some(na::Point3::new(0.0, 0.0, 0.0)));
-                    } else {
-                        mesh_obj.set_lines_width(0.0);
-                    }
-                    println!("Wireframe: {}", if show_wireframe { "ON" } else { "OFF" });
-                }
-                kiss3d::event::WindowEvent::Key(Key::B, Action::Press, _) => {
-                    show_backfaces = !show_backfaces;
-                    backface_obj.set_visible(show_backfaces);
-                    println!(
-                        "Backface visualization: {}",
-                        if show_backfaces { "ON (red)" } else { "OFF" }
-                    );
-                }
-                kiss3d::event::WindowEvent::Key(Key::U, Action::Press, _) => {
-                    show_ui = !show_ui;
-                    println!("UI overlay: {}", if show_ui { "ON" } else { "OFF" });
-                }
-                kiss3d::event::WindowEvent::Key(Key::Q, Action::Press, _)
-                | kiss3d::event::WindowEvent::Key(Key::Escape, Action::Press, _) => {
-                    return Ok(());
-                }
-                _ => {}
-            }
-        }
-    }
+    // Create and run event loop
+    let event_loop = EventLoop::new()?;
+    event_loop.run_app(&mut app)?;
 
     Ok(())
-}
-
-fn draw_ui_overlay(
-    window: &mut Window,
-    font: &Arc<Font>,
-    vertex_count: usize,
-    edge_count: usize,
-    face_count: usize,
-    is_manifold: bool,
-    hole_count: usize,
-) {
-    let x_offset = 11.0;
-    let y_offset = 15.0;
-    let line_height = 18.0;
-    let header_size = 26.0;
-    let text_size = 18.0;
-    let header_padding = 8.0; // Extra padding after headers
-
-    // Headers use lighter gray for a "thinner" appearance
-    let header_color = na::Point3::new(0.8, 0.8, 0.8);
-    let text_color = na::Point3::new(0.9, 0.9, 0.9);
-
-    window.draw_text(
-        "Controls",
-        &na::Point2::new(x_offset - 1.0, y_offset),
-        header_size,
-        font,
-        &header_color,
-    );
-    let mut current_y = y_offset + line_height + header_padding;
-
-    window.draw_text(
-        "Left Click+Drag: Rotate",
-        &na::Point2::new(x_offset, current_y),
-        text_size,
-        font,
-        &text_color,
-    );
-    current_y += line_height;
-
-    window.draw_text(
-        "Right Click+Drag: Pan",
-        &na::Point2::new(x_offset, current_y),
-        text_size,
-        font,
-        &text_color,
-    );
-    current_y += line_height;
-
-    window.draw_text(
-        "Scroll: Zoom",
-        &na::Point2::new(x_offset, current_y),
-        text_size,
-        font,
-        &text_color,
-    );
-    current_y += line_height;
-
-    window.draw_text(
-        "W: Toggle Wireframe",
-        &na::Point2::new(x_offset, current_y),
-        text_size,
-        font,
-        &text_color,
-    );
-    current_y += line_height;
-
-    window.draw_text(
-        "B: Toggle Backfaces",
-        &na::Point2::new(x_offset, current_y),
-        text_size,
-        font,
-        &text_color,
-    );
-    current_y += line_height;
-
-    window.draw_text(
-        "U: Toggle UI",
-        &na::Point2::new(x_offset, current_y),
-        text_size,
-        font,
-        &text_color,
-    );
-    current_y += line_height;
-
-    window.draw_text(
-        "Q/ESC: Exit",
-        &na::Point2::new(x_offset, current_y),
-        text_size,
-        font,
-        &text_color,
-    );
-
-    // Draw mesh statistics
-    current_y += line_height * 2.0;
-    window.draw_text(
-        "Mesh Info",
-        &na::Point2::new(x_offset - 1.0, current_y),
-        header_size,
-        font,
-        &header_color,
-    );
-    current_y += line_height + header_padding;
-
-    window.draw_text(
-        &format!("Vertices: {}", vertex_count),
-        &na::Point2::new(x_offset, current_y),
-        text_size,
-        font,
-        &text_color,
-    );
-    current_y += line_height;
-
-    window.draw_text(
-        &format!("Edges: {}", edge_count),
-        &na::Point2::new(x_offset, current_y),
-        text_size,
-        font,
-        &text_color,
-    );
-    current_y += line_height;
-
-    window.draw_text(
-        &format!("Faces: {}", face_count),
-        &na::Point2::new(x_offset, current_y),
-        text_size,
-        font,
-        &text_color,
-    );
-    current_y += line_height;
-
-    // Manifold status with color
-    let manifold_text = if is_manifold {
-        "Manifold: Yes".to_string()
-    } else {
-        format!("Manifold: No ({} holes)", hole_count)
-    };
-    let manifold_color = if is_manifold {
-        na::Point3::new(0.4, 1.0, 0.4) // Bright green
-    } else {
-        na::Point3::new(1.0, 0.4, 0.4) // Bright red
-    };
-    window.draw_text(
-        &manifold_text,
-        &na::Point2::new(10.0, current_y),
-        text_size,
-        font,
-        &manifold_color,
-    );
 }
