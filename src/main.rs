@@ -196,6 +196,7 @@ enum Commands {
     },
 
     /// Render mesh to PNG without opening a window
+    #[command(allow_negative_numbers = true, allow_hyphen_values = true)]
     Render {
         /// Input mesh file (.obj, .glb, or .3mf)
         input: PathBuf,
@@ -245,7 +246,7 @@ enum Commands {
         base_color: Option<(f32, f32, f32, f32)>,
 
         /// Light direction as x,y,z
-        #[arg(long, value_parser = parse_axis)]
+        #[arg(long, value_parser = parse_axis, allow_hyphen_values = true)]
         light_dir: Option<(f32, f32, f32)>,
 
         /// Render preset: viewer or sprite-bake
@@ -256,12 +257,12 @@ enum Commands {
         #[arg(long)]
         z_up: bool,
 
-        /// Camera position as x,y,z
-        #[arg(long, value_parser = parse_axis)]
+        /// Camera position as x,y,z (use = for negatives: --camera-pos=-1,2,3)
+        #[arg(long, value_parser = parse_axis, allow_hyphen_values = true)]
         camera_pos: Option<(f32, f32, f32)>,
 
-        /// Camera look-at target as x,y,z
-        #[arg(long, value_parser = parse_axis)]
+        /// Camera look-at target as x,y,z (use = for negatives: --camera-target=-1,0,0)
+        #[arg(long, value_parser = parse_axis, allow_hyphen_values = true)]
         camera_target: Option<(f32, f32, f32)>,
     },
 
