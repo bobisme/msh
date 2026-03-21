@@ -3,3 +3,4 @@
 *.glb
 *.gltf
 *.png
+.bones/
