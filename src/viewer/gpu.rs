@@ -103,7 +103,7 @@ impl GpuState {
         let unpadded_bytes_per_row = self.config.width * bytes_per_pixel;
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let padded_bytes_per_row =
-            (unpadded_bytes_per_row + align - 1) / align * align;
+            unpadded_bytes_per_row.div_ceil(align) * align;
 
         let buffer_size = (padded_bytes_per_row * self.config.height) as u64;
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -162,11 +162,10 @@ impl GpuState {
         }
 
         // Create parent directories if needed
-        if let Some(parent) = std::path::Path::new(path).parent() {
-            if !parent.as_os_str().is_empty() {
+        if let Some(parent) = std::path::Path::new(path).parent()
+            && !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent)?;
             }
-        }
 
         // Save as PNG
         image::save_buffer(

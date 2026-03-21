@@ -18,7 +18,7 @@ pub mod renderdoc_helper;
 pub mod headless;
 
 pub use render::view_mesh;
-pub use state::{MeshStats, ViewerCommand, ViewerState};
+pub use state::{ViewerCommand, ViewerState};
 
 #[cfg(feature = "remote")]
 pub use rpc_viewer::view_mesh_with_rpc;

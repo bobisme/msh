@@ -60,6 +60,7 @@ struct RpcViewerApp {
 
 #[cfg(feature = "remote")]
 impl RpcViewerApp {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         state: Arc<Mutex<ViewerState>>,
         command_rx: Receiver<ViewerCommand>,
@@ -324,8 +325,8 @@ impl ApplicationHandler for RpcViewerApp {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == ElementState::Pressed {
-                    if let PhysicalKey::Code(keycode) = event.physical_key {
+                if event.state == ElementState::Pressed
+                    && let PhysicalKey::Code(keycode) = event.physical_key {
                         match keycode {
                             KeyCode::KeyW => {
                                 if let Ok(mut state) = self.state.lock() {
@@ -351,7 +352,6 @@ impl ApplicationHandler for RpcViewerApp {
                             _ => {}
                         }
                     }
-                }
             }
             WindowEvent::MouseInput { state: btn_state, button, .. } => {
                 match button {
@@ -437,11 +437,10 @@ impl ApplicationHandler for RpcViewerApp {
                     );
 
                     // Queue UI text
-                    if show_ui {
-                        if let Ok(state) = self.state.lock() {
+                    if show_ui
+                        && let Ok(state) = self.state.lock() {
                             ui_renderer.queue_text(&gpu.device, &gpu.queue, &state, true);
                         }
-                    }
 
                     // Render
                     let surface_texture = gpu.surface.get_current_texture();

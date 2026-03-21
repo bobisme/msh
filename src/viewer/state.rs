@@ -16,8 +16,10 @@ impl Default for ProjectionMode {
 
 /// Shading mode for mesh rendering
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum ShadingMode {
     /// Current two-light diffuse + specular
+    #[default]
     Lit,
     /// Single directional light, no specular
     Flat,
@@ -25,11 +27,6 @@ pub enum ShadingMode {
     Unlit,
 }
 
-impl Default for ShadingMode {
-    fn default() -> Self {
-        ShadingMode::Lit
-    }
-}
 
 impl ShadingMode {
     pub fn as_u32(&self) -> u32 {
@@ -44,10 +41,6 @@ impl ShadingMode {
 /// Thread-safe viewer state that can be shared between RPC and render threads
 #[derive(Debug, Clone)]
 pub struct ViewerState {
-    /// Camera position in world space
-    pub camera_position: na::Point3<f32>,
-    /// Camera target (look-at point)
-    pub camera_target: na::Point3<f32>,
     /// Model rotation (Euler angles in radians)
     pub model_rotation: na::Vector3<f32>,
     /// UI visibility toggles
@@ -80,8 +73,6 @@ pub struct MeshStats {
 impl Default for ViewerState {
     fn default() -> Self {
         Self {
-            camera_position: na::Point3::new(5.0, 3.0, 5.0),
-            camera_target: na::Point3::origin(),
             model_rotation: na::Vector3::zeros(),
             show_wireframe: false,
             show_backfaces: false,
@@ -219,15 +210,8 @@ impl RenderPreset {
 
 impl ViewerState {
     /// Create a new viewer state with calculated camera position for a mesh
-    pub fn for_mesh(max_dimension: f32, stats: MeshStats) -> Self {
-        let camera_distance = max_dimension * 2.5;
+    pub fn for_mesh(_max_dimension: f32, stats: MeshStats) -> Self {
         Self {
-            camera_position: na::Point3::new(
-                camera_distance * 0.5,
-                camera_distance * 0.3,
-                camera_distance,
-            ),
-            camera_target: na::Point3::origin(),
             model_rotation: na::Vector3::zeros(),
             show_wireframe: false,
             show_backfaces: false,

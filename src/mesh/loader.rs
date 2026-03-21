@@ -147,7 +147,7 @@ fn parse_obj_with_colors(path: &PathBuf) -> Result<MeshWithColors, Box<dyn std::
             // Fan triangulation for n-gons
             if verts.len() >= 3 {
                 for i in 1..verts.len() - 1 {
-                    face_indices.push([verts[0], verts[i] as u32, verts[i + 1] as u32]);
+                    face_indices.push([verts[0], verts[i], verts[i + 1]]);
                     face_colors.push(current_color);
                 }
             }
@@ -193,11 +193,10 @@ fn parse_mtl(path: &Path) -> Result<HashMap<String, [f32; 4]>, Box<dyn std::erro
             if parts.len() >= 3 {
                 current_color = [parts[0], parts[1], parts[2], 1.0];
             }
-        } else if let Some(d_val) = line.strip_prefix("d ") {
-            if let Ok(alpha) = d_val.trim().parse::<f32>() {
+        } else if let Some(d_val) = line.strip_prefix("d ")
+            && let Ok(alpha) = d_val.trim().parse::<f32>() {
                 current_color[3] = alpha;
             }
-        }
     }
 
     // Save last material

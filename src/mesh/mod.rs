@@ -1,8 +1,7 @@
 pub mod loader;
 pub mod processing;
 
-pub use loader::{load_mesh, load_mesh_from_glb, load_mesh_with_colors, MeshWithColors};
 pub use processing::{
-    check_manifold, fix_holes, merge_close_vertices, remesh_incremental, remesh_pipeline,
+    check_manifold, fix_holes, remesh_incremental, remesh_pipeline,
     remesh_voxel, show_stats, VoxelMethod,
 };

@@ -7,4 +7,3 @@ pub mod server;
 
 #[cfg(feature = "remote")]
 pub use server::spawn_rpc_server;
-pub use types::parse_angle;

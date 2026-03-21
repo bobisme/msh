@@ -87,18 +87,15 @@ fn print_node_tree(node: &gltf::Node, prefix: &str, is_last: bool) {
 
     // Print custom properties if present
     let extras = node.extras();
-    if let Some(extras_raw) = extras.as_ref() {
-        if let Ok(extras_value) = serde_json::from_str::<serde_json::Value>(extras_raw.get()) {
-            if let Some(obj) = extras_value.as_object() {
-                if !obj.is_empty() {
+    if let Some(extras_raw) = extras.as_ref()
+        && let Ok(extras_value) = serde_json::from_str::<serde_json::Value>(extras_raw.get())
+            && let Some(obj) = extras_value.as_object()
+                && !obj.is_empty() {
                     println!("{}Custom Properties:", prop_prefix);
                     for (key, val) in obj {
                         println!("{}• {}: {}", prop_prefix, key, val);
                     }
                 }
-            }
-        }
-    }
 
     // Print mesh info if present
     if let Some(mesh) = node.mesh() {
@@ -194,11 +191,10 @@ fn build_node_json(node: &gltf::Node) -> Result<serde_json::Value, Box<dyn std::
 
     // Add custom properties if present
     let extras = node.extras();
-    if let Some(extras_raw) = extras.as_ref() {
-        if let Ok(extras_value) = serde_json::from_str::<serde_json::Value>(extras_raw.get()) {
+    if let Some(extras_raw) = extras.as_ref()
+        && let Ok(extras_value) = serde_json::from_str::<serde_json::Value>(extras_raw.get()) {
             node_data.insert("extras".to_string(), extras_value);
         }
-    }
 
     // Add children recursively
     let children: Vec<_> = node

@@ -139,8 +139,8 @@ impl ApplicationHandler for ViewerApp {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == ElementState::Pressed {
-                    if let PhysicalKey::Code(keycode) = event.physical_key {
+                if event.state == ElementState::Pressed
+                    && let PhysicalKey::Code(keycode) = event.physical_key {
                         match keycode {
                             KeyCode::KeyW => {
                                 self.state.show_wireframe = !self.state.show_wireframe;
@@ -170,7 +170,6 @@ impl ApplicationHandler for ViewerApp {
                             _ => {}
                         }
                     }
-                }
             }
             WindowEvent::MouseInput { state: btn_state, button, .. } => {
                 match button {

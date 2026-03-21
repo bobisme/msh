@@ -77,12 +77,11 @@ pub fn merge_close_vertices(
         let v2 = vertex_map[v2_idx];
 
         // Skip degenerate faces (where vertices got merged into same point)
-        if v0 != v1 && v1 != v2 && v0 != v2 {
-            if let Err(e) = builder.add_face(v0, v1, v2) {
+        if v0 != v1 && v1 != v2 && v0 != v2
+            && let Err(e) = builder.add_face(v0, v1, v2) {
                 // Skip faces that fail to add (likely degenerate)
                 eprintln!("Warning: Skipping degenerate face: {:?}", e);
             }
-        }
     }
 
     builder
@@ -140,6 +139,7 @@ pub fn remesh_incremental(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn remesh_pipeline(
     input: &PathBuf,
     output: &PathBuf,

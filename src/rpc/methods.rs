@@ -8,7 +8,7 @@ use jsonrpsee::types::ErrorObjectOwned;
 use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "remote")]
-use crate::viewer::{MeshStats, ViewerCommand, ViewerState};
+use crate::viewer::{ViewerCommand, ViewerState};
 #[cfg(feature = "remote")]
 use super::types::{parse_angle, MeshStatsResponse};
 

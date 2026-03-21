@@ -121,7 +121,7 @@ pub fn render_to_file(
     let bytes_per_pixel = 4u32;
     let unpadded_bytes_per_row = width * bytes_per_pixel;
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    let padded_bytes_per_row = (unpadded_bytes_per_row + align - 1) / align * align;
+    let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(align) * align;
     let buffer_size = (padded_bytes_per_row * height) as u64;
 
     let output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -177,11 +177,10 @@ pub fn render_to_file(
     output_buffer.unmap();
 
     // Create parent directories if needed
-    if let Some(parent) = std::path::Path::new(output).parent() {
-        if !parent.as_os_str().is_empty() {
+    if let Some(parent) = std::path::Path::new(output).parent()
+        && !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)?;
         }
-    }
 
     // Save PNG
     image::save_buffer(
