@@ -189,6 +189,10 @@ enum Commands {
         /// Render preset: viewer or sprite-bake
         #[arg(long)]
         preset: Option<String>,
+
+        /// Treat input as Z-up and convert to Y-up (for OpenSCAD, CAD tools)
+        #[arg(long)]
+        z_up: bool,
     },
 
     /// Check if mesh is manifold (watertight)
@@ -520,6 +524,7 @@ fn main() {
             base_color,
             light_dir,
             preset,
+            z_up,
         } => {
             use viewer::state::{ProjectionMode, ShadingMode, RenderPreset, ViewerState};
 
@@ -580,13 +585,13 @@ fn main() {
             #[cfg(feature = "remote")]
             {
                 if remote {
-                    if let Err(e) = viewer::view_mesh_with_rpc(input.as_ref(), mesh.as_deref(), no_vsync, false, build_state) {
+                    if let Err(e) = viewer::view_mesh_with_rpc(input.as_ref(), mesh.as_deref(), no_vsync, z_up, build_state) {
                         eprintln!("Error viewing mesh: {}", e);
                         std::process::exit(1);
                     }
                 } else {
                     let input_ref = input.as_ref().expect("input required when not using --remote");
-                    if let Err(e) = viewer::view_mesh(input_ref, mesh.as_deref(), no_vsync, false, build_state) {
+                    if let Err(e) = viewer::view_mesh(input_ref, mesh.as_deref(), no_vsync, z_up, build_state) {
                         eprintln!("Error viewing mesh: {}", e);
                         std::process::exit(1);
                     }
@@ -594,7 +599,7 @@ fn main() {
             }
             #[cfg(not(feature = "remote"))]
             {
-                if let Err(e) = viewer::view_mesh(&input, mesh.as_deref(), no_vsync, false, build_state) {
+                if let Err(e) = viewer::view_mesh(&input, mesh.as_deref(), no_vsync, z_up, build_state) {
                     eprintln!("Error viewing mesh: {}", e);
                     std::process::exit(1);
                 }

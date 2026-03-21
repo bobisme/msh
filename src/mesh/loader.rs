@@ -14,6 +14,15 @@ pub struct MeshWithColors {
 }
 
 impl MeshWithColors {
+    /// Convert Z-up coordinates to Y-up by swapping Y and Z
+    pub fn convert_z_up_to_y_up(&mut self) {
+        for pos in &mut self.positions {
+            let y = pos[1];
+            pos[1] = pos[2];
+            pos[2] = -y;
+        }
+    }
+
     /// Build a CornerTableF from the parsed geometry (for mesh stats)
     pub fn to_corner_table(&self) -> Result<CornerTableF, Box<dyn std::error::Error>> {
         let mut builder = CornerTableF::builder_indexed();
@@ -49,11 +58,12 @@ pub fn load_mesh_with_colors(
     match extension.as_str() {
         "obj" => parse_obj_with_colors(input),
         "glb" | "gltf" => load_glb_with_colors(input, mesh_name),
+        "3mf" => load_3mf_with_colors(input),
         _ => Err(format!("Unsupported file format: {}", extension).into()),
     }
 }
 
-/// Load mesh from file (supports .obj and .glb) — returns CornerTableF for processing
+/// Load mesh from file (supports .obj, .glb, .3mf) — returns CornerTableF for processing
 pub fn load_mesh(
     input: &PathBuf,
     mesh_name: Option<&str>,
@@ -70,6 +80,10 @@ pub fn load_mesh(
             read_from_file(input).map_err(|e| format!("Failed to read OBJ file: {:?}", e).into())
         }
         "glb" | "gltf" => load_mesh_from_glb(input, mesh_name),
+        "3mf" => {
+            let mesh_data = load_3mf_with_colors(input)?;
+            mesh_data.to_corner_table()
+        }
         _ => Err(format!("Unsupported file format: {}", extension).into()),
     }
 }
@@ -293,6 +307,192 @@ fn load_glb_with_colors(
     }
 
     if !has_materials {
+        face_colors.clear();
+    }
+
+    Ok(MeshWithColors {
+        positions,
+        face_indices,
+        face_colors,
+    })
+}
+
+// --- 3MF loading ---
+
+/// Parse a #RRGGBB or #RRGGBBAA hex color string to [f32; 4]
+fn parse_hex_color(s: &str) -> Option<[f32; 4]> {
+    let s = s.strip_prefix('#')?;
+    if s.len() != 6 && s.len() != 8 {
+        return None;
+    }
+    let r = u8::from_str_radix(&s[0..2], 16).ok()? as f32 / 255.0;
+    let g = u8::from_str_radix(&s[2..4], 16).ok()? as f32 / 255.0;
+    let b = u8::from_str_radix(&s[4..6], 16).ok()? as f32 / 255.0;
+    let a = if s.len() == 8 {
+        u8::from_str_radix(&s[6..8], 16).ok()? as f32 / 255.0
+    } else {
+        1.0
+    };
+    Some([r, g, b, a])
+}
+
+/// Load a .3mf file with per-triangle colors
+fn load_3mf_with_colors(path: &PathBuf) -> Result<MeshWithColors, Box<dyn std::error::Error>> {
+    use quick_xml::events::Event;
+    use quick_xml::Reader;
+    use std::io::Read;
+
+    let file = std::fs::File::open(path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+
+    // Find the model file (typically 3D/3dmodel.model)
+    let model_name = (0..archive.len())
+        .filter_map(|i| {
+            let entry = archive.by_index(i).ok()?;
+            let name = entry.name().to_string();
+            if name.ends_with(".model") {
+                Some(name)
+            } else {
+                None
+            }
+        })
+        .next()
+        .ok_or("No .model file found in 3MF archive")?;
+
+    let mut model_file = archive.by_name(&model_name)?;
+    let mut xml_content = String::new();
+    model_file.read_to_string(&mut xml_content)?;
+
+    // Parse XML
+    let mut reader = Reader::from_str(&xml_content);
+
+    let mut positions: Vec<[f32; 3]> = Vec::new();
+    let mut face_indices: Vec<[u32; 3]> = Vec::new();
+    let mut face_colors: Vec<[f32; 4]> = Vec::new();
+    let mut has_colors = false;
+
+    // Color groups: group_id -> Vec<[f32; 4]> (indexed by position in group)
+    let mut color_groups: HashMap<String, Vec<[f32; 4]>> = HashMap::new();
+    let mut current_color_group_id: Option<String> = None;
+
+    // Object-level default: pid (color group id) + pindex (index within group)
+    let mut default_pid: Option<String> = None;
+    let mut default_pindex: Option<usize> = None;
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Empty(ref e)) | Ok(Event::Start(ref e)) => {
+                let ln = e.local_name();
+                let local_name = std::str::from_utf8(ln.as_ref()).unwrap_or("");
+                match local_name {
+                    "vertex" => {
+                        let mut x = 0.0f32;
+                        let mut y = 0.0f32;
+                        let mut z = 0.0f32;
+                        for attr in e.attributes().flatten() {
+                            let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
+                            let val = std::str::from_utf8(&attr.value).unwrap_or("");
+                            match key {
+                                "x" => x = val.parse().unwrap_or(0.0),
+                                "y" => y = val.parse().unwrap_or(0.0),
+                                "z" => z = val.parse().unwrap_or(0.0),
+                                _ => {}
+                            }
+                        }
+                        positions.push([x, y, z]);
+                    }
+                    "triangle" => {
+                        let mut v1 = 0u32;
+                        let mut v2 = 0u32;
+                        let mut v3 = 0u32;
+                        let mut pid: Option<String> = None;
+                        let mut pindex: Option<usize> = None;
+                        for attr in e.attributes().flatten() {
+                            let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
+                            let val = std::str::from_utf8(&attr.value).unwrap_or("");
+                            match key {
+                                "v1" => v1 = val.parse().unwrap_or(0),
+                                "v2" => v2 = val.parse().unwrap_or(0),
+                                "v3" => v3 = val.parse().unwrap_or(0),
+                                "pid" => pid = Some(val.to_string()),
+                                "p1" => pindex = val.parse().ok(),
+                                _ => {}
+                            }
+                        }
+                        face_indices.push([v1, v2, v3]);
+
+                        // Resolve color: triangle-level pid/p1, or object-level default
+                        let use_pid = pid.as_ref().or(default_pid.as_ref());
+                        let use_pindex = pindex.or(default_pindex);
+
+                        let color = use_pid
+                            .and_then(|pid| color_groups.get(pid))
+                            .and_then(|group| {
+                                use_pindex.and_then(|idx| group.get(idx).copied())
+                            });
+
+                        if let Some(c) = color {
+                            has_colors = true;
+                            face_colors.push(c);
+                        } else {
+                            face_colors.push([0.85, 0.85, 0.85, 1.0]);
+                        }
+                    }
+                    "colorgroup" | "m:colorgroup" => {
+                        for attr in e.attributes().flatten() {
+                            let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
+                            if key == "id" {
+                                let val = std::str::from_utf8(&attr.value).unwrap_or("");
+                                current_color_group_id = Some(val.to_string());
+                                color_groups.entry(val.to_string()).or_default();
+                            }
+                        }
+                    }
+                    "color" | "m:color" => {
+                        if let Some(ref group_id) = current_color_group_id {
+                            for attr in e.attributes().flatten() {
+                                let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
+                                if key == "color" {
+                                    let val = std::str::from_utf8(&attr.value).unwrap_or("");
+                                    if let Some(rgba) = parse_hex_color(val) {
+                                        color_groups
+                                            .get_mut(group_id)
+                                            .unwrap()
+                                            .push(rgba);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "object" => {
+                        // Check for default pid/pindex on the object element
+                        for attr in e.attributes().flatten() {
+                            let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
+                            let val = std::str::from_utf8(&attr.value).unwrap_or("");
+                            match key {
+                                "pid" => default_pid = Some(val.to_string()),
+                                "pindex" => default_pindex = val.parse().ok(),
+                                _ => {}
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::End(ref e)) => {
+                let ln = e.local_name();
+                let local_name = std::str::from_utf8(ln.as_ref()).unwrap_or("");
+                if local_name == "colorgroup" || local_name == "m:colorgroup" {
+                    current_color_group_id = None;
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(format!("XML parse error: {}", e).into()),
+            _ => {}
+        }
+    }
+
+    if !has_colors {
         face_colors.clear();
     }
 

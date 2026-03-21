@@ -514,7 +514,12 @@ pub fn view_mesh_with_rpc(
     let (vertices, indices, backface_indices, has_vertex_colors, max_dimension, stats) = if let Some(input_path) = input {
         println!("Loading mesh from {:?}...", input_path);
 
-        let mesh_data = load_mesh_with_colors(input_path, mesh_name)?;
+        let mut mesh_data = load_mesh_with_colors(input_path, mesh_name)?;
+
+        if z_up {
+            mesh_data.convert_z_up_to_y_up();
+            println!("Converted Z-up to Y-up");
+        }
 
         // Build CornerTableF for stats
         let mesh = mesh_data.to_corner_table()?;
