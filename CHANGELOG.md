@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.1] - 2026-03-21
+
+### Fixed
+- GLB material color detection: meshes where all materials share the same `baseColorFactor` now correctly fall back to uniform `base_color` instead of rendering with per-vertex colors. Fixes `--preset sprite-bake` overriding issue.
+
+### Added
+- `--camera-pos x,y,z` and `--camera-target x,y,z` flags for `msh render`, enabling fixed camera angles for sprite baking.
+
 ## [0.5.0] - 2026-03-21
 
 ### Added
