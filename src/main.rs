@@ -195,6 +195,68 @@ enum Commands {
         z_up: bool,
     },
 
+    /// Render mesh to PNG without opening a window
+    Render {
+        /// Input mesh file (.obj, .glb, or .3mf)
+        input: PathBuf,
+
+        /// Output PNG file
+        #[arg(short, long)]
+        out: PathBuf,
+
+        /// Mesh name (required if GLB contains multiple meshes)
+        #[arg(short, long)]
+        mesh: Option<String>,
+
+        /// Image width in pixels (default: 800)
+        #[arg(long, default_value_t = 800)]
+        width: u32,
+
+        /// Image height in pixels (default: 600)
+        #[arg(long, default_value_t = 600)]
+        height: u32,
+
+        /// Projection mode: perspective or ortho
+        #[arg(long)]
+        projection: Option<String>,
+
+        /// Orthographic world height (default: 10.0)
+        #[arg(long)]
+        ortho_height: Option<f32>,
+
+        /// Field of view in degrees (default: 45.0)
+        #[arg(long)]
+        fov_deg: Option<f32>,
+
+        /// Clear color as r,g,b,a (0.0-1.0)
+        #[arg(long, value_parser = parse_color)]
+        clear_color: Option<(f32, f32, f32, f32)>,
+
+        /// Use transparent background
+        #[arg(long)]
+        transparent_bg: bool,
+
+        /// Shading mode: lit, flat, or unlit
+        #[arg(long)]
+        shading: Option<String>,
+
+        /// Base color as r,g,b,a (0.0-1.0)
+        #[arg(long, value_parser = parse_color)]
+        base_color: Option<(f32, f32, f32, f32)>,
+
+        /// Light direction as x,y,z
+        #[arg(long, value_parser = parse_axis)]
+        light_dir: Option<(f32, f32, f32)>,
+
+        /// Render preset: viewer or sprite-bake
+        #[arg(long)]
+        preset: Option<String>,
+
+        /// Treat input as Z-up and convert to Y-up (for OpenSCAD, CAD tools)
+        #[arg(long)]
+        z_up: bool,
+    },
+
     /// Check if mesh is manifold (watertight)
     Check {
         /// Input mesh file (.obj or .glb)
@@ -604,6 +666,85 @@ fn main() {
                     std::process::exit(1);
                 }
             }
+        }
+        Commands::Render {
+            input,
+            out,
+            mesh,
+            width,
+            height,
+            projection,
+            ortho_height,
+            fov_deg,
+            clear_color,
+            transparent_bg,
+            shading,
+            base_color,
+            light_dir,
+            preset,
+            z_up,
+        } => {
+            use viewer::state::{ProjectionMode, ShadingMode, RenderPreset, ViewerState};
+
+            let build_state = |state: &mut ViewerState| {
+                if let Some(ref preset_name) = preset {
+                    if let Some(p) = RenderPreset::by_name(preset_name) {
+                        state.apply_preset(&p);
+                    } else {
+                        eprintln!("Unknown preset: {}", preset_name);
+                        std::process::exit(1);
+                    }
+                }
+                if let Some(ref proj) = projection {
+                    state.projection = match proj.as_str() {
+                        "perspective" => ProjectionMode::Perspective { fov_y_degrees: fov_deg.unwrap_or(45.0) },
+                        "ortho" | "orthographic" => ProjectionMode::Orthographic { world_height: ortho_height.unwrap_or(10.0) },
+                        _ => {
+                            eprintln!("Invalid projection: {}. Use 'perspective' or 'ortho'", proj);
+                            std::process::exit(1);
+                        }
+                    };
+                } else {
+                    if let Some(fov) = fov_deg {
+                        state.projection = ProjectionMode::Perspective { fov_y_degrees: fov };
+                    }
+                    if let Some(h) = ortho_height {
+                        state.projection = ProjectionMode::Orthographic { world_height: h };
+                    }
+                }
+                if transparent_bg {
+                    state.clear_color = [0.0, 0.0, 0.0, 0.0];
+                }
+                if let Some((r, g, b, a)) = clear_color {
+                    state.clear_color = [r, g, b, a];
+                }
+                if let Some(ref mode) = shading {
+                    state.shading = match mode.as_str() {
+                        "lit" => ShadingMode::Lit,
+                        "flat" => ShadingMode::Flat,
+                        "unlit" => ShadingMode::Unlit,
+                        _ => {
+                            eprintln!("Invalid shading: {}. Use 'lit', 'flat', or 'unlit'", mode);
+                            std::process::exit(1);
+                        }
+                    };
+                }
+                if let Some((r, g, b, a)) = base_color {
+                    state.base_color = [r, g, b, a];
+                }
+                if let Some((x, y, z)) = light_dir {
+                    state.light_direction = [x, y, z];
+                }
+            };
+
+            let out_str = out.to_string_lossy().to_string();
+            if let Err(e) = viewer::headless::render_to_file(
+                &input, &out_str, mesh.as_deref(), width, height, z_up, build_state,
+            ) {
+                eprintln!("Error rendering: {}", e);
+                std::process::exit(1);
+            }
+            println!("Rendered to {}", out_str);
         }
         Commands::Check { input, mesh } => {
             if let Err(e) = mesh::check_manifold(&input, mesh.as_deref()) {

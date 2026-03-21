@@ -15,6 +15,8 @@ pub mod rpc_viewer;
 #[cfg(feature = "renderdoc")]
 pub mod renderdoc_helper;
 
+pub mod headless;
+
 pub use render::view_mesh;
 pub use state::{MeshStats, ViewerCommand, ViewerState};
 
