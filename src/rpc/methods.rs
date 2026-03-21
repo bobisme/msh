@@ -83,6 +83,30 @@ pub trait ViewerRpc {
     #[method(name = "screenshot")]
     async fn screenshot(&self, path: String) -> Result<String, ErrorObjectOwned>;
 
+    /// Set projection mode
+    #[method(name = "set_projection")]
+    async fn set_projection(&self, mode: String, value: Option<f32>) -> Result<String, ErrorObjectOwned>;
+
+    /// Set clear color (RGBA, 0.0-1.0)
+    #[method(name = "set_clear_color")]
+    async fn set_clear_color(&self, r: f32, g: f32, b: f32, a: f32) -> Result<String, ErrorObjectOwned>;
+
+    /// Set shading mode
+    #[method(name = "set_shading")]
+    async fn set_shading(&self, mode: String) -> Result<String, ErrorObjectOwned>;
+
+    /// Set base color (RGBA, 0.0-1.0)
+    #[method(name = "set_base_color")]
+    async fn set_base_color(&self, r: f32, g: f32, b: f32, a: f32) -> Result<String, ErrorObjectOwned>;
+
+    /// Set light direction
+    #[method(name = "set_light_direction")]
+    async fn set_light_direction(&self, x: f32, y: f32, z: f32) -> Result<String, ErrorObjectOwned>;
+
+    /// Apply a named render preset
+    #[method(name = "apply_preset")]
+    async fn apply_preset(&self, name: String) -> Result<String, ErrorObjectOwned>;
+
     /// Quit the viewer
     #[method(name = "quit")]
     async fn quit(&self) -> Result<String, ErrorObjectOwned>;
@@ -299,6 +323,55 @@ impl ViewerRpcServer for ViewerRpcImpl {
             ))?;
 
         Ok(format!("Screenshot will be saved to: {}", path))
+    }
+
+    async fn set_projection(&self, mode: String, value: Option<f32>) -> Result<String, ErrorObjectOwned> {
+        use crate::viewer::state::ProjectionMode;
+        let projection = match mode.as_str() {
+            "perspective" => ProjectionMode::Perspective { fov_y_degrees: value.unwrap_or(45.0) },
+            "ortho" | "orthographic" => ProjectionMode::Orthographic { world_height: value.unwrap_or(10.0) },
+            _ => return Err(ErrorObjectOwned::owned(-32602, "Invalid projection mode", Some("Use 'perspective' or 'ortho'"))),
+        };
+        self.command_tx.send(ViewerCommand::SetProjection { mode: projection })
+            .map_err(|e| ErrorObjectOwned::owned(-32000, "Failed to send command", Some(e.to_string())))?;
+        Ok(format!("Projection set to {}", mode))
+    }
+
+    async fn set_clear_color(&self, r: f32, g: f32, b: f32, a: f32) -> Result<String, ErrorObjectOwned> {
+        self.command_tx.send(ViewerCommand::SetClearColor { color: [r, g, b, a] })
+            .map_err(|e| ErrorObjectOwned::owned(-32000, "Failed to send command", Some(e.to_string())))?;
+        Ok(format!("Clear color set to ({}, {}, {}, {})", r, g, b, a))
+    }
+
+    async fn set_shading(&self, mode: String) -> Result<String, ErrorObjectOwned> {
+        use crate::viewer::state::ShadingMode;
+        let shading = match mode.as_str() {
+            "lit" => ShadingMode::Lit,
+            "flat" => ShadingMode::Flat,
+            "unlit" => ShadingMode::Unlit,
+            _ => return Err(ErrorObjectOwned::owned(-32602, "Invalid shading mode", Some("Use 'lit', 'flat', or 'unlit'"))),
+        };
+        self.command_tx.send(ViewerCommand::SetShading { mode: shading })
+            .map_err(|e| ErrorObjectOwned::owned(-32000, "Failed to send command", Some(e.to_string())))?;
+        Ok(format!("Shading set to {}", mode))
+    }
+
+    async fn set_base_color(&self, r: f32, g: f32, b: f32, a: f32) -> Result<String, ErrorObjectOwned> {
+        self.command_tx.send(ViewerCommand::SetBaseColor { color: [r, g, b, a] })
+            .map_err(|e| ErrorObjectOwned::owned(-32000, "Failed to send command", Some(e.to_string())))?;
+        Ok(format!("Base color set to ({}, {}, {}, {})", r, g, b, a))
+    }
+
+    async fn set_light_direction(&self, x: f32, y: f32, z: f32) -> Result<String, ErrorObjectOwned> {
+        self.command_tx.send(ViewerCommand::SetLightDirection { direction: [x, y, z] })
+            .map_err(|e| ErrorObjectOwned::owned(-32000, "Failed to send command", Some(e.to_string())))?;
+        Ok(format!("Light direction set to ({}, {}, {})", x, y, z))
+    }
+
+    async fn apply_preset(&self, name: String) -> Result<String, ErrorObjectOwned> {
+        self.command_tx.send(ViewerCommand::ApplyPreset { name: name.clone() })
+            .map_err(|e| ErrorObjectOwned::owned(-32000, "Failed to send command", Some(e.to_string())))?;
+        Ok(format!("Applying preset: {}", name))
     }
 
     async fn quit(&self) -> Result<String, ErrorObjectOwned> {

@@ -1,5 +1,7 @@
 use nalgebra as na;
 
+use super::state::ProjectionMode;
+
 const SENSITIVITY_FACTOR: f32 = 0.0005;
 
 /// Arc-ball camera for orbital rotation around a target point
@@ -51,15 +53,40 @@ impl ArcBallCamera {
         na::Matrix4::look_at_rh(&self.eye, &self.target, &self.up)
     }
 
-    /// Get projection matrix
+    /// Get projection matrix for given mode
     pub fn projection_matrix(&self) -> na::Matrix4<f32> {
+        self.projection_matrix_for(&ProjectionMode::default())
+    }
+
+    /// Get projection matrix for a specific projection mode
+    pub fn projection_matrix_for(&self, mode: &ProjectionMode) -> na::Matrix4<f32> {
         let aspect = self.width as f32 / self.height as f32;
-        na::Matrix4::new_perspective(aspect, 45.0_f32.to_radians(), 0.1, 1000.0)
+        match mode {
+            ProjectionMode::Perspective { fov_y_degrees } => {
+                na::Matrix4::new_perspective(aspect, fov_y_degrees.to_radians(), 0.1, 1000.0)
+            }
+            ProjectionMode::Orthographic { world_height } => {
+                let half_h = world_height / 2.0;
+                let half_w = half_h * aspect;
+                // nalgebra's new_orthographic maps z to [-1,1] (OpenGL convention).
+                // wgpu uses [0,1] depth (Vulkan/Metal/DX12), so remap: z' = z * 0.5 + 0.5
+                let mut proj = na::Matrix4::new_orthographic(-half_w, half_w, -half_h, half_h, 0.1, 1000.0);
+                // Apply z remapping: scale z by 0.5 and offset by 0.5
+                proj[(2, 2)] = proj[(2, 2)] * 0.5;
+                proj[(2, 3)] = proj[(2, 3)] * 0.5 + 0.5;
+                proj
+            }
+        }
     }
 
     /// Get combined view-projection matrix
     pub fn view_projection_matrix(&self) -> na::Matrix4<f32> {
         self.projection_matrix() * self.view_matrix()
+    }
+
+    /// Get combined view-projection matrix for a specific projection mode
+    pub fn view_projection_matrix_for(&self, mode: &ProjectionMode) -> na::Matrix4<f32> {
+        self.projection_matrix_for(mode) * self.view_matrix()
     }
 
     /// Handle mouse drag for rotation

@@ -181,6 +181,81 @@ pub async fn screenshot(
 }
 
 #[cfg(feature = "remote")]
+pub async fn set_projection(
+    client: &HttpClient,
+    mode: String,
+    value: Option<f32>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let response: String = client
+        .request("set_projection", (mode, value))
+        .await?;
+    Ok(response)
+}
+
+#[cfg(feature = "remote")]
+pub async fn set_clear_color(
+    client: &HttpClient,
+    r: f32,
+    g: f32,
+    b: f32,
+    a: f32,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let response: String = client
+        .request("set_clear_color", (r, g, b, a))
+        .await?;
+    Ok(response)
+}
+
+#[cfg(feature = "remote")]
+pub async fn set_shading(
+    client: &HttpClient,
+    mode: String,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let response: String = client
+        .request("set_shading", (mode,))
+        .await?;
+    Ok(response)
+}
+
+#[cfg(feature = "remote")]
+pub async fn set_base_color(
+    client: &HttpClient,
+    r: f32,
+    g: f32,
+    b: f32,
+    a: f32,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let response: String = client
+        .request("set_base_color", (r, g, b, a))
+        .await?;
+    Ok(response)
+}
+
+#[cfg(feature = "remote")]
+pub async fn set_light_direction(
+    client: &HttpClient,
+    x: f32,
+    y: f32,
+    z: f32,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let response: String = client
+        .request("set_light_direction", (x, y, z))
+        .await?;
+    Ok(response)
+}
+
+#[cfg(feature = "remote")]
+pub async fn apply_preset(
+    client: &HttpClient,
+    name: String,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let response: String = client
+        .request("apply_preset", (name,))
+        .await?;
+    Ok(response)
+}
+
+#[cfg(feature = "remote")]
 pub async fn quit(client: &HttpClient) -> Result<String, Box<dyn std::error::Error>> {
     let response: String = client
         .request("quit", ArrayParams::new())

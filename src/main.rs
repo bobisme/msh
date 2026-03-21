@@ -153,6 +153,42 @@ enum Commands {
         /// Disable vsync (unlocked framerate)
         #[arg(long)]
         no_vsync: bool,
+
+        /// Projection mode: perspective or ortho
+        #[arg(long)]
+        projection: Option<String>,
+
+        /// Orthographic world height (default: 10.0)
+        #[arg(long)]
+        ortho_height: Option<f32>,
+
+        /// Field of view in degrees (default: 45.0)
+        #[arg(long)]
+        fov_deg: Option<f32>,
+
+        /// Clear color as r,g,b,a (0.0-1.0)
+        #[arg(long, value_parser = parse_color)]
+        clear_color: Option<(f32, f32, f32, f32)>,
+
+        /// Use transparent background
+        #[arg(long)]
+        transparent_bg: bool,
+
+        /// Shading mode: lit, flat, or unlit
+        #[arg(long)]
+        shading: Option<String>,
+
+        /// Base color as r,g,b,a (0.0-1.0)
+        #[arg(long, value_parser = parse_color)]
+        base_color: Option<(f32, f32, f32, f32)>,
+
+        /// Light direction as x,y,z
+        #[arg(long, value_parser = parse_axis)]
+        light_dir: Option<(f32, f32, f32)>,
+
+        /// Render preset: viewer or sprite-bake
+        #[arg(long)]
+        preset: Option<String>,
     },
 
     /// Check if mesh is manifold (watertight)
@@ -223,6 +259,7 @@ enum RemoteCommands {
     },
 
     /// Set absolute model rotation (Euler angles)
+    #[command(allow_negative_numbers = true)]
     Rotate {
         /// X rotation (radians)
         x: f32,
@@ -233,6 +270,7 @@ enum RemoteCommands {
     },
 
     /// Rotate model around an axis
+    #[command(allow_negative_numbers = true)]
     RotateAxis {
         /// Axis as x,y,z
         #[arg(value_parser = parse_axis)]
@@ -243,6 +281,7 @@ enum RemoteCommands {
     },
 
     /// Set camera position
+    #[command(allow_negative_numbers = true)]
     CameraPos {
         /// X position
         x: f32,
@@ -253,6 +292,7 @@ enum RemoteCommands {
     },
 
     /// Set camera target (look-at point)
+    #[command(allow_negative_numbers = true)]
     CameraTarget {
         /// X position
         x: f32,
@@ -304,11 +344,71 @@ enum RemoteCommands {
         path: String,
     },
 
+    /// Set projection mode
+    SetProjection {
+        /// Mode: perspective or ortho
+        mode: String,
+        /// Optional value: FOV degrees for perspective, world height for ortho
+        value: Option<f32>,
+    },
+
+    /// Set clear color (RGBA, 0.0-1.0)
+    #[command(allow_negative_numbers = true)]
+    SetClearColor {
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+    },
+
+    /// Set transparent background
+    TransparentBg,
+
+    /// Set shading mode
+    SetShading {
+        /// Mode: lit, flat, or unlit
+        mode: String,
+    },
+
+    /// Set base color (RGBA, 0.0-1.0)
+    #[command(allow_negative_numbers = true)]
+    SetBaseColor {
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+    },
+
+    /// Set light direction
+    #[command(allow_negative_numbers = true)]
+    SetLightDir {
+        x: f32,
+        y: f32,
+        z: f32,
+    },
+
+    /// Apply a render preset
+    Preset {
+        /// Preset name: viewer or sprite-bake
+        name: String,
+    },
+
     /// Quit the running viewer
     Quit,
 }
 
-#[cfg(feature = "remote")]
+fn parse_color(s: &str) -> Result<(f32, f32, f32, f32), String> {
+    let parts: Vec<&str> = s.split(',').collect();
+    if parts.len() != 4 {
+        return Err("Color must be in format: r,g,b,a".to_string());
+    }
+    let r = parts[0].trim().parse::<f32>().map_err(|_| format!("Invalid r value: {}", parts[0]))?;
+    let g = parts[1].trim().parse::<f32>().map_err(|_| format!("Invalid g value: {}", parts[1]))?;
+    let b = parts[2].trim().parse::<f32>().map_err(|_| format!("Invalid b value: {}", parts[2]))?;
+    let a = parts[3].trim().parse::<f32>().map_err(|_| format!("Invalid a value: {}", parts[3]))?;
+    Ok((r, g, b, a))
+}
+
 fn parse_axis(s: &str) -> Result<(f32, f32, f32), String> {
     let parts: Vec<&str> = s.split(',').collect();
     if parts.len() != 3 {
@@ -411,17 +511,82 @@ fn main() {
             #[cfg(feature = "remote")]
             remote,
             no_vsync,
+            projection,
+            ortho_height,
+            fov_deg,
+            clear_color,
+            transparent_bg,
+            shading,
+            base_color,
+            light_dir,
+            preset,
         } => {
+            use viewer::state::{ProjectionMode, ShadingMode, RenderPreset, ViewerState};
+
+            // Build initial render state from CLI flags
+            let build_state = |state: &mut ViewerState| {
+                // Apply preset first (individual flags override)
+                if let Some(ref preset_name) = preset {
+                    if let Some(p) = RenderPreset::by_name(preset_name) {
+                        state.apply_preset(&p);
+                    } else {
+                        eprintln!("Unknown preset: {}", preset_name);
+                        std::process::exit(1);
+                    }
+                }
+                // Individual overrides
+                if let Some(ref proj) = projection {
+                    state.projection = match proj.as_str() {
+                        "perspective" => ProjectionMode::Perspective { fov_y_degrees: fov_deg.unwrap_or(45.0) },
+                        "ortho" | "orthographic" => ProjectionMode::Orthographic { world_height: ortho_height.unwrap_or(10.0) },
+                        _ => {
+                            eprintln!("Invalid projection: {}. Use 'perspective' or 'ortho'", proj);
+                            std::process::exit(1);
+                        }
+                    };
+                } else {
+                    if let Some(fov) = fov_deg {
+                        state.projection = ProjectionMode::Perspective { fov_y_degrees: fov };
+                    }
+                    if let Some(h) = ortho_height {
+                        state.projection = ProjectionMode::Orthographic { world_height: h };
+                    }
+                }
+                if transparent_bg {
+                    state.clear_color = [0.0, 0.0, 0.0, 0.0];
+                }
+                if let Some((r, g, b, a)) = clear_color {
+                    state.clear_color = [r, g, b, a];
+                }
+                if let Some(ref mode) = shading {
+                    state.shading = match mode.as_str() {
+                        "lit" => ShadingMode::Lit,
+                        "flat" => ShadingMode::Flat,
+                        "unlit" => ShadingMode::Unlit,
+                        _ => {
+                            eprintln!("Invalid shading: {}. Use 'lit', 'flat', or 'unlit'", mode);
+                            std::process::exit(1);
+                        }
+                    };
+                }
+                if let Some((r, g, b, a)) = base_color {
+                    state.base_color = [r, g, b, a];
+                }
+                if let Some((x, y, z)) = light_dir {
+                    state.light_direction = [x, y, z];
+                }
+            };
+
             #[cfg(feature = "remote")]
             {
                 if remote {
-                    if let Err(e) = viewer::view_mesh_with_rpc(input.as_ref(), mesh.as_deref(), no_vsync) {
+                    if let Err(e) = viewer::view_mesh_with_rpc(input.as_ref(), mesh.as_deref(), no_vsync, false, build_state) {
                         eprintln!("Error viewing mesh: {}", e);
                         std::process::exit(1);
                     }
                 } else {
                     let input_ref = input.as_ref().expect("input required when not using --remote");
-                    if let Err(e) = viewer::view_mesh(input_ref, mesh.as_deref(), no_vsync) {
+                    if let Err(e) = viewer::view_mesh(input_ref, mesh.as_deref(), no_vsync, false, build_state) {
                         eprintln!("Error viewing mesh: {}", e);
                         std::process::exit(1);
                     }
@@ -429,7 +594,7 @@ fn main() {
             }
             #[cfg(not(feature = "remote"))]
             {
-                if let Err(e) = viewer::view_mesh(&input, mesh.as_deref(), no_vsync) {
+                if let Err(e) = viewer::view_mesh(&input, mesh.as_deref(), no_vsync, false, build_state) {
                     eprintln!("Error viewing mesh: {}", e);
                     std::process::exit(1);
                 }
@@ -620,6 +785,41 @@ fn handle_remote_command(command: RemoteCommands) {
                 };
 
                 let response = client::screenshot(&client, absolute_path).await?;
+                println!("{}", response);
+                Ok(())
+            }
+            RemoteCommands::SetProjection { mode, value } => {
+                let response = client::set_projection(&client, mode, value).await?;
+                println!("{}", response);
+                Ok(())
+            }
+            RemoteCommands::SetClearColor { r, g, b, a } => {
+                let response = client::set_clear_color(&client, r, g, b, a).await?;
+                println!("{}", response);
+                Ok(())
+            }
+            RemoteCommands::TransparentBg => {
+                let response = client::set_clear_color(&client, 0.0, 0.0, 0.0, 0.0).await?;
+                println!("{}", response);
+                Ok(())
+            }
+            RemoteCommands::SetShading { mode } => {
+                let response = client::set_shading(&client, mode).await?;
+                println!("{}", response);
+                Ok(())
+            }
+            RemoteCommands::SetBaseColor { r, g, b, a } => {
+                let response = client::set_base_color(&client, r, g, b, a).await?;
+                println!("{}", response);
+                Ok(())
+            }
+            RemoteCommands::SetLightDir { x, y, z } => {
+                let response = client::set_light_direction(&client, x, y, z).await?;
+                println!("{}", response);
+                Ok(())
+            }
+            RemoteCommands::Preset { name } => {
+                let response = client::apply_preset(&client, name).await?;
                 println!("{}", response);
                 Ok(())
             }

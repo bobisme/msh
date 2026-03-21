@@ -1,5 +1,6 @@
 use nalgebra as na;
 use std::path::PathBuf;
+use std::sync::Arc;
 use winit::{
     application::ApplicationHandler,
     event::*,
@@ -8,27 +9,28 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use crate::mesh::loader::load_mesh;
+use crate::mesh::loader::load_mesh_with_colors;
 
 use super::{
     camera::ArcBallCamera,
     gpu::GpuState,
-    mesh_renderer::MeshRenderer,
+    mesh_renderer::{MeshRenderer, Vertex},
     state::{MeshStats, ViewerState},
     ui_renderer::UiRenderer,
 };
 
 /// Application state for the viewer
 struct ViewerApp {
-    window: Option<Window>,
-    gpu: Option<GpuState<'static>>,
+    window: Option<Arc<Window>>,
+    gpu: Option<GpuState>,
     camera: Option<ArcBallCamera>,
     mesh_renderer: Option<MeshRenderer>,
     ui_renderer: Option<UiRenderer>,
     state: ViewerState,
-    vertices: Vec<na::Point3<f32>>,
+    vertices: Vec<Vertex>,
     indices: Vec<u32>,
     backface_indices: Vec<u32>,
+    has_vertex_colors: bool,
     max_dimension: f32,
     mouse_pressed_left: bool,
     mouse_pressed_right: bool,
@@ -39,9 +41,10 @@ struct ViewerApp {
 impl ViewerApp {
     fn new(
         state: ViewerState,
-        vertices: Vec<na::Point3<f32>>,
+        vertices: Vec<Vertex>,
         indices: Vec<u32>,
         backface_indices: Vec<u32>,
+        has_vertex_colors: bool,
         max_dimension: f32,
         vsync: bool,
     ) -> Self {
@@ -55,6 +58,7 @@ impl ViewerApp {
             vertices,
             indices,
             backface_indices,
+            has_vertex_colors,
             max_dimension,
             mouse_pressed_left: false,
             mouse_pressed_right: false,
@@ -70,18 +74,13 @@ impl ApplicationHandler for ViewerApp {
         if self.window.is_none() {
             let window_attributes = Window::default_attributes()
                 .with_title("Mesh Viewer - msh");
-            let window = event_loop.create_window(window_attributes).unwrap();
+            let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
-            // Initialize GPU - use pollster to block on async init
+            // Initialize GPU
             let size = window.inner_size();
             let vsync = self.vsync;
             let gpu = pollster::block_on(async {
-                // SAFETY: The window lives as long as ViewerApp, and we ensure
-                // the surface (which borrows the window) is dropped before the window
-                let window_ptr: &'static Window = unsafe {
-                    std::mem::transmute(&window as &Window)
-                };
-                GpuState::new(window_ptr, vsync).await.unwrap()
+                GpuState::new(window.clone(), vsync).await.unwrap()
             });
 
             // Create camera
@@ -96,7 +95,7 @@ impl ApplicationHandler for ViewerApp {
 
             // Create mesh renderer
             let mut mesh_renderer = MeshRenderer::new(&gpu.device, &gpu.config);
-            mesh_renderer.load_mesh(&gpu.device, &self.vertices, &self.indices, &self.backface_indices);
+            mesh_renderer.load_mesh(&gpu.device, &self.vertices, &self.indices, &self.backface_indices, self.has_vertex_colors);
 
             // Create UI renderer
             let ui_renderer = UiRenderer::new(&gpu.device, &gpu.queue, &gpu.config);
@@ -225,9 +224,17 @@ impl ApplicationHandler for ViewerApp {
                     self.ui_renderer.as_mut(),
                 ) {
                     // Update uniforms
-                    let view_proj = camera.view_projection_matrix();
+                    let view_proj = camera.view_projection_matrix_for(&self.state.projection);
                     let model = na::Matrix4::identity();
-                    mesh_renderer.update_uniforms(&gpu.queue, &view_proj, &model, &camera.position());
+                    mesh_renderer.update_uniforms(
+                        &gpu.queue,
+                        &view_proj,
+                        &model,
+                        &camera.position(),
+                        self.state.shading.as_u32(),
+                        self.state.base_color,
+                        self.state.light_direction,
+                    );
 
                     // Queue UI text
                     if self.state.show_ui {
@@ -235,7 +242,8 @@ impl ApplicationHandler for ViewerApp {
                     }
 
                     // Render
-                    match gpu.surface.get_current_texture() {
+                    let surface_texture = gpu.surface.get_current_texture();
+                    match surface_texture {
                         Ok(output) => {
                             let view = output
                                 .texture
@@ -253,6 +261,7 @@ impl ApplicationHandler for ViewerApp {
                                 &view,
                                 self.state.show_wireframe,
                                 self.state.show_backfaces,
+                                self.state.clear_color,
                             );
 
                             // Render UI
@@ -263,8 +272,16 @@ impl ApplicationHandler for ViewerApp {
                             gpu.queue.submit(std::iter::once(encoder.finish()));
                             output.present();
                         }
+                        Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                            // Reconfigure surface
+                            gpu.surface.configure(&gpu.device, &gpu.config);
+                        }
+                        Err(wgpu::SurfaceError::OutOfMemory) => {
+                            eprintln!("Out of GPU memory");
+                            event_loop.exit();
+                        }
                         Err(e) => {
-                            eprintln!("Failed to get surface texture: {:?}", e);
+                            eprintln!("Surface error: {:?}", e);
                         }
                     }
 
@@ -276,17 +293,78 @@ impl ApplicationHandler for ViewerApp {
     }
 }
 
+/// Extract rendering data from MeshWithColors
+pub fn extract_render_data(
+    mesh_data: &crate::mesh::loader::MeshWithColors,
+) -> (Vec<Vertex>, Vec<u32>, Vec<u32>, bool, f32) {
+    let has_vertex_colors = !mesh_data.face_colors.is_empty();
+    let default_color = [0.0f32; 4]; // unused when has_vertex_colors is false
+
+    // Calculate bounding box
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for pos in &mesh_data.positions {
+        for i in 0..3 {
+            min[i] = min[i].min(pos[i]);
+            max[i] = max[i].max(pos[i]);
+        }
+    }
+    let center = [
+        (min[0] + max[0]) / 2.0,
+        (min[1] + max[1]) / 2.0,
+        (min[2] + max[2]) / 2.0,
+    ];
+    let size = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
+    let max_dimension = size[0].max(size[1]).max(size[2]);
+
+    // Build triangle soup with per-vertex colors
+    let mut vertices = Vec::with_capacity(mesh_data.face_indices.len() * 3);
+    let mut indices = Vec::with_capacity(mesh_data.face_indices.len() * 3);
+    let mut vertex_idx = 0u32;
+
+    for (face_i, tri) in mesh_data.face_indices.iter().enumerate() {
+        let color = if has_vertex_colors {
+            mesh_data.face_colors[face_i]
+        } else {
+            default_color
+        };
+
+        for &vi in tri {
+            let pos = mesh_data.positions[vi as usize];
+            vertices.push(Vertex {
+                position: [pos[0] - center[0], pos[1] - center[1], pos[2] - center[2]],
+                color,
+            });
+            indices.push(vertex_idx);
+            vertex_idx += 1;
+        }
+    }
+
+    // Create backface indices (reversed winding)
+    let mut backface_indices = Vec::with_capacity(indices.len());
+    for i in (0..indices.len()).step_by(3) {
+        backface_indices.push(indices[i]);
+        backface_indices.push(indices[i + 2]);
+        backface_indices.push(indices[i + 1]);
+    }
+
+    (vertices, indices, backface_indices, has_vertex_colors, max_dimension)
+}
+
 pub fn view_mesh(
     input: &PathBuf,
     mesh_name: Option<&str>,
     no_vsync: bool,
+    z_up: bool,
+    configure_state: impl FnOnce(&mut ViewerState),
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Loading mesh from {:?}...", input);
 
-    // Load mesh through baby_shark
-    let mesh = load_mesh(input, mesh_name)?;
+    // Load mesh with color data
+    let mesh_data = load_mesh_with_colors(input, mesh_name)?;
 
-    // Calculate mesh statistics
+    // Build CornerTableF for stats
+    let mesh = mesh_data.to_corner_table()?;
     let vertex_count = mesh.count_vertices();
     let face_count = mesh.count_faces();
     let edge_count = mesh.unique_edges().count();
@@ -301,98 +379,24 @@ pub fn view_mesh(
         hole_count: boundary_rings.len(),
     };
 
-    // Calculate bounding box to center and scale the mesh
-    let mut min = [f32::INFINITY, f32::INFINITY, f32::INFINITY];
-    let mut max = [f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
-
-    for vertex_id in mesh.vertices() {
-        let pos = mesh.vertex_position(vertex_id);
-        min[0] = min[0].min(pos.x);
-        min[1] = min[1].min(pos.y);
-        min[2] = min[2].min(pos.z);
-        max[0] = max[0].max(pos.x);
-        max[1] = max[1].max(pos.y);
-        max[2] = max[2].max(pos.z);
-    }
-
-    let center = [
-        (min[0] + max[0]) / 2.0,
-        (min[1] + max[1]) / 2.0,
-        (min[2] + max[2]) / 2.0,
-    ];
-
-    let size = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
-    let max_dimension = size[0].max(size[1]).max(size[2]);
+    // Extract rendering data
+    let (vertices, indices, backface_indices, has_vertex_colors, max_dimension) =
+        extract_render_data(&mesh_data);
 
     println!(
-        "Mesh bounds: ({:.3}, {:.3}, {:.3}) to ({:.3}, {:.3}, {:.3})",
-        min[0], min[1], min[2], max[0], max[1], max[2]
-    );
-    println!(
-        "Mesh center: ({:.3}, {:.3}, {:.3})",
-        center[0], center[1], center[2]
-    );
-    println!("Mesh size: {:.3}", max_dimension);
-
-    // Extract as triangle soup (no vertex sharing)
-    let mut vertices: Vec<na::Point3<f32>> = Vec::new();
-    let mut indices: Vec<u32> = Vec::new();
-
-    let mut vertex_idx = 0u32;
-
-    for face_id in mesh.faces() {
-        let triangle = mesh.face_positions(face_id);
-
-        // Get the three vertices of the triangle
-        let v0 = triangle.p1();
-        let v1 = triangle.p2();
-        let v2 = triangle.p3();
-
-        // Add vertices directly (centered)
-        vertices.push(na::Point3::new(
-            v0.x - center[0],
-            v0.y - center[1],
-            v0.z - center[2],
-        ));
-        vertices.push(na::Point3::new(
-            v1.x - center[0],
-            v1.y - center[1],
-            v1.z - center[2],
-        ));
-        vertices.push(na::Point3::new(
-            v2.x - center[0],
-            v2.y - center[1],
-            v2.z - center[2],
-        ));
-
-        // Create triangle with sequential indices
-        indices.push(vertex_idx);
-        indices.push(vertex_idx + 1);
-        indices.push(vertex_idx + 2);
-        vertex_idx += 3;
-    }
-
-    println!(
-        "Extracted {} vertices ({} triangles) as triangle soup",
+        "Extracted {} vertices ({} triangles) as triangle soup{}",
         vertices.len(),
-        indices.len() / 3
+        indices.len() / 3,
+        if has_vertex_colors { " with material colors" } else { "" },
     );
-
-    // Create reversed indices for backface visualization
-    let mut backface_indices: Vec<u32> = Vec::new();
-    for i in (0..indices.len()).step_by(3) {
-        // Reverse winding order: (v0, v1, v2) -> (v0, v2, v1)
-        backface_indices.push(indices[i]);
-        backface_indices.push(indices[i + 2]);
-        backface_indices.push(indices[i + 1]);
-    }
 
     // Create viewer state
-    let state = ViewerState::for_mesh(max_dimension, stats);
+    let mut state = ViewerState::for_mesh(max_dimension, stats);
+    configure_state(&mut state);
 
     // Create application
-    let vsync = !no_vsync; // Convert flag: --no-vsync means vsync=false
-    let mut app = ViewerApp::new(state, vertices, indices, backface_indices, max_dimension, vsync);
+    let vsync = !no_vsync;
+    let mut app = ViewerApp::new(state, vertices, indices, backface_indices, has_vertex_colors, max_dimension, vsync);
 
     // Create and run event loop
     let event_loop = EventLoop::new()?;

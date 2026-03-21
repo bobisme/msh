@@ -2,15 +2,17 @@ use bytemuck::{Pod, Zeroable};
 use nalgebra as na;
 use wgpu;
 
-/// Vertex for mesh rendering
+/// Vertex for mesh rendering (position + per-vertex color)
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct Vertex {
     pub position: [f32; 3],
+    pub color: [f32; 4],
 }
 
 impl Vertex {
-    const ATTRIBS: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![0 => Float32x3];
+    const ATTRIBS: [wgpu::VertexAttribute; 2] =
+        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4];
 
     pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
         wgpu::VertexBufferLayout {
@@ -29,6 +31,14 @@ pub struct Uniforms {
     pub model: [[f32; 4]; 4],
     pub camera_pos: [f32; 3],
     pub _padding: f32,
+    // Shading parameters
+    pub shading_mode: u32,       // 0=Lit, 1=Flat, 2=Unlit
+    pub has_vertex_colors: u32,  // 1=use per-vertex color, 0=use uniform base_color
+    pub _pad2: u32,
+    pub _pad3: u32,
+    pub base_color: [f32; 4],
+    pub light_direction: [f32; 3],
+    pub _pad4: f32,
 }
 
 /// Mesh renderer handles rendering of 3D meshes
@@ -50,6 +60,9 @@ pub struct MeshRenderer {
     // Mesh data
     num_indices: u32,
     num_backface_indices: u32,
+
+    // Whether the loaded mesh has per-vertex colors
+    has_vertex_colors: bool,
 
     // Depth texture
     depth_texture: wgpu::TextureView,
@@ -243,6 +256,7 @@ impl MeshRenderer {
             bind_group,
             num_indices: 0,
             num_backface_indices: 0,
+            has_vertex_colors: false,
             depth_texture,
         }
     }
@@ -276,26 +290,21 @@ impl MeshRenderer {
         self.depth_texture = Self::create_depth_texture(device, config);
     }
 
-    /// Load mesh data
+    /// Load mesh data with per-vertex colors
     pub fn load_mesh(
         &mut self,
         device: &wgpu::Device,
-        vertices: &[na::Point3<f32>],
+        vertices: &[Vertex],
         indices: &[u32],
         backface_indices: &[u32],
+        has_vertex_colors: bool,
     ) {
-        // Convert vertices to GPU format
-        let gpu_vertices: Vec<Vertex> = vertices
-            .iter()
-            .map(|v| Vertex {
-                position: [v.x, v.y, v.z],
-            })
-            .collect();
+        self.has_vertex_colors = has_vertex_colors;
 
         // Create vertex buffer
         self.vertex_buffer = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(&gpu_vertices),
+            contents: bytemuck::cast_slice(vertices),
             usage: wgpu::BufferUsages::VERTEX,
         }));
 
@@ -326,12 +335,22 @@ impl MeshRenderer {
         view_proj: &na::Matrix4<f32>,
         model: &na::Matrix4<f32>,
         camera_pos: &na::Point3<f32>,
+        shading_mode: u32,
+        base_color: [f32; 4],
+        light_direction: [f32; 3],
     ) {
         let uniforms = Uniforms {
             view_proj: (*view_proj).into(),
             model: (*model).into(),
             camera_pos: [camera_pos.x, camera_pos.y, camera_pos.z],
             _padding: 0.0,
+            shading_mode,
+            has_vertex_colors: if self.has_vertex_colors { 1 } else { 0 },
+            _pad2: 0,
+            _pad3: 0,
+            base_color,
+            light_direction,
+            _pad4: 0.0,
         };
 
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
@@ -344,6 +363,7 @@ impl MeshRenderer {
         view: &wgpu::TextureView,
         show_wireframe: bool,
         show_backfaces: bool,
+        clear_color: [f32; 4],
     ) {
         if self.vertex_buffer.is_none() {
             return; // No mesh loaded
@@ -356,10 +376,10 @@ impl MeshRenderer {
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.0,
-                        g: 0.0,
-                        b: 0.0,
-                        a: 1.0,
+                        r: clear_color[0] as f64,
+                        g: clear_color[1] as f64,
+                        b: clear_color[2] as f64,
+                        a: clear_color[3] as f64,
                     }),
                     store: wgpu::StoreOp::Store,
                 },

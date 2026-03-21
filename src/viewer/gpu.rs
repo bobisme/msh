@@ -1,18 +1,19 @@
+use std::sync::Arc;
 use wgpu;
 use winit::window::Window;
 
 /// GPU state for wgpu rendering
-pub struct GpuState<'window> {
-    pub surface: wgpu::Surface<'window>,
+pub struct GpuState {
+    pub surface: wgpu::Surface<'static>,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub config: wgpu::SurfaceConfiguration,
     pub size: winit::dpi::PhysicalSize<u32>,
 }
 
-impl<'window> GpuState<'window> {
+impl GpuState {
     /// Create a new GPU state for the given window
-    pub async fn new(window: &'window Window, vsync: bool) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn new(window: Arc<Window>, vsync: bool) -> Result<Self, Box<dyn std::error::Error>> {
         let size = window.inner_size();
 
         // Create instance with Vulkan backend for RenderDoc support
@@ -21,8 +22,8 @@ impl<'window> GpuState<'window> {
             ..Default::default()
         });
 
-        // Create surface
-        let surface = instance.create_surface(window)?;
+        // Create surface (Arc<Window> gives us Surface<'static>)
+        let surface = instance.create_surface(window.clone())?;
 
         // Request adapter
         let adapter = instance
