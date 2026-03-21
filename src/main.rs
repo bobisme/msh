@@ -255,6 +255,14 @@ enum Commands {
         /// Treat input as Z-up and convert to Y-up (for OpenSCAD, CAD tools)
         #[arg(long)]
         z_up: bool,
+
+        /// Camera position as x,y,z
+        #[arg(long, value_parser = parse_axis)]
+        camera_pos: Option<(f32, f32, f32)>,
+
+        /// Camera look-at target as x,y,z
+        #[arg(long, value_parser = parse_axis)]
+        camera_target: Option<(f32, f32, f32)>,
     },
 
     /// Check if mesh is manifold (watertight)
@@ -683,6 +691,8 @@ fn main() {
             light_dir,
             preset,
             z_up,
+            camera_pos,
+            camera_target,
         } => {
             use viewer::state::{ProjectionMode, ShadingMode, RenderPreset, ViewerState};
 
@@ -739,7 +749,7 @@ fn main() {
 
             let out_str = out.to_string_lossy().to_string();
             if let Err(e) = viewer::headless::render_to_file(
-                &input, &out_str, mesh.as_deref(), width, height, z_up, build_state,
+                &input, &out_str, mesh.as_deref(), width, height, z_up, camera_pos, camera_target, build_state,
             ) {
                 eprintln!("Error rendering: {}", e);
                 std::process::exit(1);

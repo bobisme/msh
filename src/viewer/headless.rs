@@ -11,6 +11,7 @@ use super::{
 };
 
 /// Render a mesh to a PNG file without opening a window
+#[allow(clippy::too_many_arguments)]
 pub fn render_to_file(
     input: &PathBuf,
     output: &str,
@@ -18,6 +19,8 @@ pub fn render_to_file(
     width: u32,
     height: u32,
     z_up: bool,
+    camera_pos_override: Option<(f32, f32, f32)>,
+    camera_target_override: Option<(f32, f32, f32)>,
     configure_state: impl FnOnce(&mut ViewerState),
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Load mesh
@@ -65,13 +68,17 @@ pub fn render_to_file(
     mesh_renderer.load_mesh(&device, &vertices, &indices, &backface_indices, has_vertex_colors);
 
     // Set up camera
-    let camera_distance = max_dimension * 2.5;
-    let eye = na::Point3::new(
-        camera_distance * 0.5,
-        camera_distance * 0.3,
-        camera_distance,
-    );
-    let target = na::Point3::origin();
+    let eye = if let Some((x, y, z)) = camera_pos_override {
+        na::Point3::new(x, y, z)
+    } else {
+        let d = max_dimension * 2.5;
+        na::Point3::new(d * 0.5, d * 0.3, d)
+    };
+    let target = if let Some((x, y, z)) = camera_target_override {
+        na::Point3::new(x, y, z)
+    } else {
+        na::Point3::origin()
+    };
     let camera = ArcBallCamera::new(eye, target, width, height);
 
     // Update uniforms

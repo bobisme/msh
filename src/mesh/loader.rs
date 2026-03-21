@@ -262,6 +262,7 @@ fn load_glb_with_colors(
     let mut face_indices: Vec<[u32; 3]> = Vec::new();
     let mut face_colors: Vec<[f32; 4]> = Vec::new();
     let mut vertex_offset = 0u32;
+    let mut first_color: Option<[f32; 4]> = None;
     let mut has_materials = false;
 
     for primitive in selected_mesh.primitives() {
@@ -278,9 +279,11 @@ fn load_glb_with_colors(
         let pbr = material.pbr_metallic_roughness();
         let base_color_factor = pbr.base_color_factor(); // [f32; 4]
 
-        // Check if this is a non-default material with a distinct color
-        if base_color_factor != [1.0, 1.0, 1.0, 1.0] || material.name().is_some() {
-            has_materials = true;
+        // Detect meaningful material variation (distinct colors across primitives)
+        match first_color {
+            None => first_color = Some(base_color_factor),
+            Some(first) if first != base_color_factor => has_materials = true,
+            _ => {}
         }
 
         // Get indices and build face list
