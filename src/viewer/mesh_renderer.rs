@@ -2,17 +2,18 @@ use bytemuck::{Pod, Zeroable};
 use nalgebra as na;
 use wgpu;
 
-/// Vertex for mesh rendering (position + per-vertex color)
+/// Vertex for mesh rendering (position + per-vertex color + UV)
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct Vertex {
     pub position: [f32; 3],
     pub color: [f32; 4],
+    pub texcoord: [f32; 2],
 }
 
 impl Vertex {
-    const ATTRIBS: [wgpu::VertexAttribute; 2] =
-        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4];
+    const ATTRIBS: [wgpu::VertexAttribute; 3] =
+        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4, 2 => Float32x2];
 
     pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
         wgpu::VertexBufferLayout {
@@ -34,7 +35,7 @@ pub struct Uniforms {
     // Shading parameters
     pub shading_mode: u32,       // 0=Lit, 1=Flat, 2=Unlit
     pub has_vertex_colors: u32,  // 1=use per-vertex color, 0=use uniform base_color
-    pub _pad2: u32,
+    pub has_texture: u32,        // 1=sample baseColorTexture, 0=no texture
     pub _pad3: u32,
     pub base_color: [f32; 4],
     pub light_direction: [f32; 3],
@@ -63,6 +64,12 @@ pub struct MeshRenderer {
 
     // Whether the loaded mesh has per-vertex colors
     has_vertex_colors: bool,
+    // Whether the loaded mesh has a texture
+    has_texture: bool,
+
+    // Texture bind group (group 1)
+    texture_bind_group: wgpu::BindGroup,
+    texture_bind_group_layout: wgpu::BindGroupLayout,
 
     // Depth texture
     depth_texture: wgpu::TextureView,
@@ -112,10 +119,38 @@ impl MeshRenderer {
             }],
         });
 
+        // Create texture bind group layout (group 1)
+        let texture_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Texture Bind Group Layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+
+        // Create default 1x1 white texture (placeholder when no texture loaded)
+        let (default_texture_bind_group, _) =
+            Self::create_texture_bind_group(device, &texture_bind_group_layout, 1, 1);
+
         // Create pipeline layout
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Mesh Pipeline Layout"),
-            bind_group_layouts: &[&bind_group_layout],
+            bind_group_layouts: &[&bind_group_layout, &texture_bind_group_layout],
             push_constant_ranges: &[],
         });
 
@@ -257,6 +292,9 @@ impl MeshRenderer {
             num_indices: 0,
             num_backface_indices: 0,
             has_vertex_colors: false,
+            has_texture: false,
+            texture_bind_group: default_texture_bind_group,
+            texture_bind_group_layout,
             depth_texture,
         }
     }
@@ -290,16 +328,77 @@ impl MeshRenderer {
         self.depth_texture = Self::create_depth_texture(device, config);
     }
 
-    /// Load mesh data with per-vertex colors
+    /// Create a texture + sampler bind group
+    fn create_texture_bind_group(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        width: u32,
+        height: u32,
+    ) -> (wgpu::BindGroup, wgpu::Texture) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Mesh Texture"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Texture Bind Group"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+            ],
+        });
+        (bind_group, texture)
+    }
+
+    /// Load mesh data with per-vertex colors and optional texture
+    #[allow(clippy::too_many_arguments)]
     pub fn load_mesh(
         &mut self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         vertices: &[Vertex],
         indices: &[u32],
         backface_indices: &[u32],
         has_vertex_colors: bool,
+        texture_data: Option<&crate::mesh::loader::TextureData>,
     ) {
         self.has_vertex_colors = has_vertex_colors;
+
+        // Load texture if provided
+        if let Some(tex) = texture_data {
+            let (bind_group, texture) = Self::create_texture_bind_group(
+                device, &self.texture_bind_group_layout, tex.width, tex.height,
+            );
+            // Write pixel data to texture
+            queue.write_texture(
+                texture.as_image_copy(),
+                &tex.pixels,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(4 * tex.width),
+                    rows_per_image: Some(tex.height),
+                },
+                wgpu::Extent3d { width: tex.width, height: tex.height, depth_or_array_layers: 1 },
+            );
+            self.texture_bind_group = bind_group;
+            self.has_texture = true;
+        } else {
+            self.has_texture = false;
+        }
 
         // Create vertex buffer
         self.vertex_buffer = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -347,7 +446,7 @@ impl MeshRenderer {
             _padding: 0.0,
             shading_mode,
             has_vertex_colors: if self.has_vertex_colors { 1 } else { 0 },
-            _pad2: 0,
+            has_texture: if self.has_texture { 1 } else { 0 },
             _pad3: 0,
             base_color,
             light_direction,
@@ -399,6 +498,7 @@ impl MeshRenderer {
         });
 
         render_pass.set_bind_group(0, &self.bind_group, &[]);
+        render_pass.set_bind_group(1, &self.texture_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.as_ref().unwrap().slice(..));
         render_pass.set_index_buffer(
             self.index_buffer.as_ref().unwrap().slice(..),

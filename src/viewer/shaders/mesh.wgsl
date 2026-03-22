@@ -6,9 +6,9 @@ struct Uniforms {
     camera_pos: vec3<f32>,
     _padding: f32,
     // Shading parameters
-    shading_mode: u32,    // 0=Lit, 1=Flat, 2=Unlit
+    shading_mode: u32,      // 0=Lit, 1=Flat, 2=Unlit
     has_vertex_colors: u32, // 1=use per-vertex color, 0=use uniform base_color
-    _pad2: u32,
+    has_texture: u32,       // 1=sample baseColorTexture, 0=no texture
     _pad3: u32,
     base_color: vec4<f32>,
     light_direction: vec3<f32>,
@@ -18,15 +18,22 @@ struct Uniforms {
 @group(0) @binding(0)
 var<uniform> uniforms: Uniforms;
 
+@group(1) @binding(0)
+var base_color_texture: texture_2d<f32>;
+@group(1) @binding(1)
+var base_color_sampler: sampler;
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) texcoord: vec2<f32>,
 };
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) world_position: vec3<f32>,
     @location(1) vertex_color: vec4<f32>,
+    @location(2) texcoord: vec2<f32>,
 };
 
 @vertex
@@ -36,6 +43,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.world_position = world_pos.xyz;
     out.clip_position = uniforms.view_proj * world_pos;
     out.vertex_color = in.color;
+    out.texcoord = in.texcoord;
     return out;
 }
 
@@ -44,10 +52,19 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 struct FragmentInput {
     @location(0) world_position: vec3<f32>,
     @location(1) vertex_color: vec4<f32>,
+    @location(2) texcoord: vec2<f32>,
 };
 
-// Resolve base color: use per-vertex color when available, otherwise uniform
-fn resolve_base_color(vertex_color: vec4<f32>) -> vec4<f32> {
+// Resolve base color: texture > vertex color > uniform
+fn resolve_base_color(vertex_color: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {
+    if uniforms.has_texture == 1u {
+        let tex_color = textureSample(base_color_texture, base_color_sampler, uv);
+        // Multiply texture by vertex color or base_color factor
+        if uniforms.has_vertex_colors == 1u {
+            return tex_color * vertex_color;
+        }
+        return tex_color * uniforms.base_color;
+    }
     if uniforms.has_vertex_colors == 1u {
         return vertex_color;
     }
@@ -56,7 +73,7 @@ fn resolve_base_color(vertex_color: vec4<f32>) -> vec4<f32> {
 
 @fragment
 fn fs_main(in: FragmentInput) -> @location(0) vec4<f32> {
-    let color = resolve_base_color(in.vertex_color);
+    let color = resolve_base_color(in.vertex_color, in.texcoord);
     let base = color.rgb;
 
     // Unlit: just output base color

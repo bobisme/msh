@@ -31,6 +31,7 @@ struct ViewerApp {
     indices: Vec<u32>,
     backface_indices: Vec<u32>,
     has_vertex_colors: bool,
+    texture: Option<crate::mesh::loader::TextureData>,
     max_dimension: f32,
     mouse_pressed_left: bool,
     mouse_pressed_right: bool,
@@ -39,12 +40,14 @@ struct ViewerApp {
 }
 
 impl ViewerApp {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         state: ViewerState,
         vertices: Vec<Vertex>,
         indices: Vec<u32>,
         backface_indices: Vec<u32>,
         has_vertex_colors: bool,
+        texture: Option<crate::mesh::loader::TextureData>,
         max_dimension: f32,
         vsync: bool,
     ) -> Self {
@@ -59,6 +62,7 @@ impl ViewerApp {
             indices,
             backface_indices,
             has_vertex_colors,
+            texture,
             max_dimension,
             mouse_pressed_left: false,
             mouse_pressed_right: false,
@@ -95,7 +99,7 @@ impl ApplicationHandler for ViewerApp {
 
             // Create mesh renderer
             let mut mesh_renderer = MeshRenderer::new(&gpu.device, &gpu.config);
-            mesh_renderer.load_mesh(&gpu.device, &self.vertices, &self.indices, &self.backface_indices, self.has_vertex_colors);
+            mesh_renderer.load_mesh(&gpu.device, &gpu.queue, &self.vertices, &self.indices, &self.backface_indices, self.has_vertex_colors, self.texture.as_ref());
 
             // Create UI renderer
             let ui_renderer = UiRenderer::new(&gpu.device, &gpu.queue, &gpu.config);
@@ -297,7 +301,8 @@ pub fn extract_render_data(
     mesh_data: &crate::mesh::loader::MeshWithColors,
 ) -> (Vec<Vertex>, Vec<u32>, Vec<u32>, bool, f32) {
     let has_vertex_colors = !mesh_data.face_colors.is_empty();
-    let default_color = [0.0f32; 4]; // unused when has_vertex_colors is false
+    let has_uvs = !mesh_data.texcoords.is_empty();
+    let default_color = [0.0f32; 4];
 
     // Calculate bounding box
     let mut min = [f32::INFINITY; 3];
@@ -316,7 +321,7 @@ pub fn extract_render_data(
     let size = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
     let max_dimension = size[0].max(size[1]).max(size[2]);
 
-    // Build triangle soup with per-vertex colors
+    // Build triangle soup with per-vertex colors and UVs
     let mut vertices = Vec::with_capacity(mesh_data.face_indices.len() * 3);
     let mut indices = Vec::with_capacity(mesh_data.face_indices.len() * 3);
     let mut vertex_idx = 0u32;
@@ -330,9 +335,15 @@ pub fn extract_render_data(
 
         for &vi in tri {
             let pos = mesh_data.positions[vi as usize];
+            let uv = if has_uvs {
+                mesh_data.texcoords[vi as usize]
+            } else {
+                [0.0, 0.0]
+            };
             vertices.push(Vertex {
                 position: [pos[0] - center[0], pos[1] - center[1], pos[2] - center[2]],
                 color,
+                texcoord: uv,
             });
             indices.push(vertex_idx);
             vertex_idx += 1;
@@ -400,7 +411,8 @@ pub fn view_mesh(
 
     // Create application
     let vsync = !no_vsync;
-    let mut app = ViewerApp::new(state, vertices, indices, backface_indices, has_vertex_colors, max_dimension, vsync);
+    let texture = mesh_data.texture;
+    let mut app = ViewerApp::new(state, vertices, indices, backface_indices, has_vertex_colors, texture, max_dimension, vsync);
 
     // Create and run event loop
     let event_loop = EventLoop::new()?;

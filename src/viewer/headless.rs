@@ -65,7 +65,7 @@ pub fn render_to_file(
 
     // Create mesh renderer and load mesh
     let mut mesh_renderer = MeshRenderer::new(&device, &config);
-    mesh_renderer.load_mesh(&device, &vertices, &indices, &backface_indices, has_vertex_colors);
+    mesh_renderer.load_mesh(&device, &queue, &vertices, &indices, &backface_indices, has_vertex_colors, mesh_data.texture.as_ref());
 
     // Set up camera
     let eye = if let Some((x, y, z)) = camera_pos_override {

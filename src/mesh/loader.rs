@@ -3,7 +3,14 @@ use baby_shark::mesh::corner_table::CornerTableF;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// Mesh geometry with optional per-face material colors
+/// Embedded texture image data
+pub struct TextureData {
+    pub pixels: Vec<u8>,  // RGBA8
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Mesh geometry with optional per-face material colors and textures
 pub struct MeshWithColors {
     /// Vertex positions
     pub positions: Vec<[f32; 3]>,
@@ -11,6 +18,10 @@ pub struct MeshWithColors {
     pub face_indices: Vec<[u32; 3]>,
     /// Per-face RGBA colors (empty if no materials found)
     pub face_colors: Vec<[f32; 4]>,
+    /// Per-vertex UV coordinates (empty if no UVs)
+    pub texcoords: Vec<[f32; 2]>,
+    /// Embedded texture (first baseColorTexture found, if any)
+    pub texture: Option<TextureData>,
 }
 
 impl MeshWithColors {
@@ -162,6 +173,8 @@ fn parse_obj_with_colors(path: &PathBuf) -> Result<MeshWithColors, Box<dyn std::
         positions,
         face_indices,
         face_colors,
+        texcoords: Vec::new(),
+        texture: None,
     })
 }
 
@@ -214,7 +227,7 @@ fn load_glb_with_colors(
     path: &PathBuf,
     mesh_name: Option<&str>,
 ) -> Result<MeshWithColors, Box<dyn std::error::Error>> {
-    let (document, buffers, _images) = gltf::import(path)?;
+    let (document, buffers, images) = gltf::import(path)?;
 
     let meshes: Vec<_> = document.meshes().collect();
     if meshes.is_empty() {
@@ -259,11 +272,13 @@ fn load_glb_with_colors(
     );
 
     let mut positions: Vec<[f32; 3]> = Vec::new();
+    let mut texcoords: Vec<[f32; 2]> = Vec::new();
     let mut face_indices: Vec<[u32; 3]> = Vec::new();
     let mut face_colors: Vec<[f32; 4]> = Vec::new();
     let mut vertex_offset = 0u32;
     let mut first_color: Option<[f32; 4]> = None;
     let mut has_materials = false;
+    let mut texture_image_index: Option<usize> = None;
 
     for primitive in selected_mesh.primitives() {
         let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
@@ -272,7 +287,17 @@ fn load_glb_with_colors(
             .read_positions()
             .ok_or("Primitive has no position data")?;
         let pos_vec: Vec<[f32; 3]> = prim_positions.collect();
+        let vert_count = pos_vec.len();
         positions.extend_from_slice(&pos_vec);
+
+        // Read UV coordinates
+        if let Some(tex_coords) = reader.read_tex_coords(0) {
+            let uv_vec: Vec<[f32; 2]> = tex_coords.into_f32().collect();
+            texcoords.extend_from_slice(&uv_vec);
+        } else {
+            // No UVs for this primitive — fill with zeros
+            texcoords.extend(std::iter::repeat_n([0.0f32; 2], vert_count));
+        }
 
         // Get material color for this primitive
         let material = primitive.material();
@@ -285,6 +310,12 @@ fn load_glb_with_colors(
             Some(first) if first != base_color_factor => has_materials = true,
             _ => {}
         }
+
+        // Track first baseColorTexture
+        if texture_image_index.is_none()
+            && let Some(tex_info) = pbr.base_color_texture() {
+                texture_image_index = Some(tex_info.texture().source().index());
+            }
 
         // Get indices and build face list
         let idx_list: Vec<u32> = if let Some(indices) = reader.read_indices() {
@@ -312,10 +343,45 @@ fn load_glb_with_colors(
         face_colors.clear();
     }
 
+    // If no UVs were found at all, clear the texcoords vec
+    let has_uvs = texcoords.iter().any(|uv| uv[0] != 0.0 || uv[1] != 0.0);
+    if !has_uvs {
+        texcoords.clear();
+    }
+
+    // Load texture image data
+    let texture = texture_image_index.and_then(|idx| {
+        images.get(idx).map(|img| {
+            let rgba_pixels = match img.format {
+                gltf::image::Format::R8G8B8A8 => img.pixels.clone(),
+                gltf::image::Format::R8G8B8 => {
+                    // Convert RGB to RGBA
+                    let mut rgba = Vec::with_capacity(img.pixels.len() / 3 * 4);
+                    for chunk in img.pixels.chunks(3) {
+                        rgba.extend_from_slice(chunk);
+                        rgba.push(255);
+                    }
+                    rgba
+                }
+                _ => {
+                    eprintln!("Warning: unsupported texture format {:?}, skipping", img.format);
+                    return TextureData { pixels: Vec::new(), width: 0, height: 0 };
+                }
+            };
+            TextureData {
+                pixels: rgba_pixels,
+                width: img.width,
+                height: img.height,
+            }
+        })
+    }).filter(|t| !t.pixels.is_empty());
+
     Ok(MeshWithColors {
         positions,
         face_indices,
         face_colors,
+        texcoords,
+        texture,
     })
 }
 
@@ -502,6 +568,8 @@ fn load_3mf_with_colors(path: &PathBuf) -> Result<MeshWithColors, Box<dyn std::e
         positions,
         face_indices,
         face_colors,
+        texcoords: Vec::new(),
+        texture: None,
     })
 }
 

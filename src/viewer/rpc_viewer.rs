@@ -48,6 +48,7 @@ struct RpcViewerApp {
     indices: Vec<u32>,
     backface_indices: Vec<u32>,
     has_vertex_colors: bool,
+    texture: Option<crate::mesh::loader::TextureData>,
     max_dimension: f32,
     mouse_pressed_left: bool,
     mouse_pressed_right: bool,
@@ -68,6 +69,7 @@ impl RpcViewerApp {
         indices: Vec<u32>,
         backface_indices: Vec<u32>,
         has_vertex_colors: bool,
+        texture: Option<crate::mesh::loader::TextureData>,
         max_dimension: f32,
         vsync: bool,
     ) -> Self {
@@ -83,6 +85,7 @@ impl RpcViewerApp {
             indices,
             backface_indices,
             has_vertex_colors,
+            texture,
             max_dimension,
             mouse_pressed_left: false,
             mouse_pressed_right: false,
@@ -140,34 +143,7 @@ impl RpcViewerApp {
                         println!("Loading mesh from {:?}...", path);
                         match load_mesh_with_colors(&path, mesh_name.as_deref()) {
                             Ok(mesh_data) => {
-                                // Extract render data
-                                let (vertices, indices, backface_indices, has_vertex_colors, max_dimension) =
-                                    extract_render_data(&mesh_data);
-
-                                self.vertices = vertices;
-                                self.indices = indices;
-                                self.backface_indices = backface_indices;
-                                self.has_vertex_colors = has_vertex_colors;
-                                self.max_dimension = max_dimension;
-
-                                // Reload mesh in renderer
-                                if let (Some(gpu), Some(mesh_renderer)) = (self.gpu.as_ref(), self.mesh_renderer.as_mut()) {
-                                    mesh_renderer.load_mesh(&gpu.device, &self.vertices, &self.indices, &self.backface_indices, self.has_vertex_colors);
-                                }
-
-                                // Update camera to frame new mesh
-                                let camera_distance = self.max_dimension * 2.5;
-                                let eye = na::Point3::new(
-                                    camera_distance * 0.5,
-                                    camera_distance * 0.3,
-                                    camera_distance,
-                                );
-                                let target = na::Point3::origin();
-                                camera.set_position(eye);
-                                camera.set_target(target);
-                                println!("Camera repositioned to fit model (dimension: {:.3})", self.max_dimension);
-
-                                // Update stats from CornerTableF
+                                // Update stats from CornerTableF (before moving texture out)
                                 match mesh_data.to_corner_table() {
                                     Ok(mesh) => {
                                         if let Ok(mut state) = self.state.lock() {
@@ -181,6 +157,33 @@ impl RpcViewerApp {
                                     }
                                     Err(e) => eprintln!("Warning: could not compute mesh stats: {}", e),
                                 }
+
+                                // Extract render data
+                                let (vertices, indices, backface_indices, has_vertex_colors, max_dimension) =
+                                    extract_render_data(&mesh_data);
+
+                                self.vertices = vertices;
+                                self.indices = indices;
+                                self.backface_indices = backface_indices;
+                                self.has_vertex_colors = has_vertex_colors;
+                                self.texture = mesh_data.texture;
+                                self.max_dimension = max_dimension;
+
+                                // Reload mesh in renderer
+                                if let (Some(gpu), Some(mesh_renderer)) = (self.gpu.as_ref(), self.mesh_renderer.as_mut()) {
+                                    mesh_renderer.load_mesh(&gpu.device, &gpu.queue, &self.vertices, &self.indices, &self.backface_indices, self.has_vertex_colors, self.texture.as_ref());
+                                }
+
+                                // Update camera to frame new mesh
+                                let camera_distance = self.max_dimension * 2.5;
+                                let eye = na::Point3::new(
+                                    camera_distance * 0.5,
+                                    camera_distance * 0.3,
+                                    camera_distance,
+                                );
+                                let target = na::Point3::origin();
+                                camera.set_position(eye);
+                                camera.set_target(target);
 
                                 println!("Mesh loaded: {} triangles{}", self.indices.len() / 3,
                                     if has_vertex_colors { " with material colors" } else { "" });
@@ -277,7 +280,7 @@ impl ApplicationHandler for RpcViewerApp {
 
             // Create mesh renderer
             let mut mesh_renderer = MeshRenderer::new(&gpu.device, &gpu.config);
-            mesh_renderer.load_mesh(&gpu.device, &self.vertices, &self.indices, &self.backface_indices, self.has_vertex_colors);
+            mesh_renderer.load_mesh(&gpu.device, &gpu.queue, &self.vertices, &self.indices, &self.backface_indices, self.has_vertex_colors, self.texture.as_ref());
 
             // Create UI renderer
             let ui_renderer = UiRenderer::new(&gpu.device, &gpu.queue, &gpu.config);
@@ -510,7 +513,7 @@ pub fn view_mesh_with_rpc(
     z_up: bool,
     configure_state: impl FnOnce(&mut ViewerState),
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (vertices, indices, backface_indices, has_vertex_colors, max_dimension, stats) = if let Some(input_path) = input {
+    let (vertices, indices, backface_indices, has_vertex_colors, texture, max_dimension, stats) = if let Some(input_path) = input {
         println!("Loading mesh from {:?}...", input_path);
 
         let mut mesh_data = load_mesh_with_colors(input_path, mesh_name)?;
@@ -539,17 +542,18 @@ pub fn view_mesh_with_rpc(
         let (vertices, indices, backface_indices, has_vertex_colors, max_dimension) =
             extract_render_data(&mesh_data);
 
-        (vertices, indices, backface_indices, has_vertex_colors, max_dimension, stats)
+        let texture = mesh_data.texture;
+        (vertices, indices, backface_indices, has_vertex_colors, texture, max_dimension, stats)
     } else {
         println!("Starting viewer without initial mesh (use 'msh remote load' to load a mesh)...");
         let vertices = vec![
-            Vertex { position: [0.0, 0.0, 0.0], color: [0.0; 4] },
-            Vertex { position: [0.0, 0.0, 0.0], color: [0.0; 4] },
-            Vertex { position: [0.0, 0.0, 0.0], color: [0.0; 4] },
+            Vertex { position: [0.0, 0.0, 0.0], color: [0.0; 4], texcoord: [0.0; 2] },
+            Vertex { position: [0.0, 0.0, 0.0], color: [0.0; 4], texcoord: [0.0; 2] },
+            Vertex { position: [0.0, 0.0, 0.0], color: [0.0; 4], texcoord: [0.0; 2] },
         ];
         let indices = vec![0, 1, 2];
         let backface_indices = vec![0, 2, 1];
-        (vertices, indices, backface_indices, false, 1.0, MeshStats::default())
+        (vertices, indices, backface_indices, false, None, 1.0, MeshStats::default())
     };
 
     // Create shared state
@@ -567,7 +571,7 @@ pub fn view_mesh_with_rpc(
 
     // Create application
     let vsync = !no_vsync;
-    let mut app = RpcViewerApp::new(state, command_rx, vertices, indices, backface_indices, has_vertex_colors, max_dimension, vsync);
+    let mut app = RpcViewerApp::new(state, command_rx, vertices, indices, backface_indices, has_vertex_colors, texture, max_dimension, vsync);
 
     // Create and run event loop
     let event_loop = EventLoop::new()?;
