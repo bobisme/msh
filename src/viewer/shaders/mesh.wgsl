@@ -9,7 +9,7 @@ struct Uniforms {
     shading_mode: u32,      // 0=Lit, 1=Flat, 2=Unlit
     has_vertex_colors: u32, // 1=use per-vertex color, 0=use uniform base_color
     has_texture: u32,       // 1=sample baseColorTexture, 0=no texture
-    _pad3: u32,
+    joint_count: u32,       // number of active joints (0 = no skinning)
     base_color: vec4<f32>,
     light_direction: vec3<f32>,
     _pad4: f32,
@@ -23,10 +23,18 @@ var base_color_texture: texture_2d<f32>;
 @group(1) @binding(1)
 var base_color_sampler: sampler;
 
+struct JointPalette {
+    joints: array<mat4x4<f32>, 256>,
+};
+@group(2) @binding(0)
+var<uniform> joint_palette: JointPalette;
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) color: vec4<f32>,
     @location(2) texcoord: vec2<f32>,
+    @location(3) joint_indices: vec4<u32>,
+    @location(4) joint_weights: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -39,7 +47,28 @@ struct VertexOutput {
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
-    let world_pos = uniforms.model * vec4<f32>(in.position, 1.0);
+
+    // Apply GPU skinning when joints are present
+    var local_pos: vec4<f32>;
+    if uniforms.joint_count > 0u {
+        var skinned_pos = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        for (var i = 0u; i < 4u; i = i + 1u) {
+            let weight = in.joint_weights[i];
+            if weight > 0.0 {
+                let joint_mat = joint_palette.joints[in.joint_indices[i]];
+                skinned_pos = skinned_pos + weight * (joint_mat * vec4<f32>(in.position, 1.0));
+            }
+        }
+        // If no skinning weights applied (all weights zero), use original position
+        if skinned_pos.w == 0.0 {
+            skinned_pos = vec4<f32>(in.position, 1.0);
+        }
+        local_pos = skinned_pos;
+    } else {
+        local_pos = vec4<f32>(in.position, 1.0);
+    }
+
+    let world_pos = uniforms.model * local_pos;
     out.world_position = world_pos.xyz;
     out.clip_position = uniforms.view_proj * world_pos;
     out.vertex_color = in.color;

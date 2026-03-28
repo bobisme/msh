@@ -193,6 +193,22 @@ enum Commands {
         /// Treat input as Z-up and convert to Y-up (for OpenSCAD, CAD tools)
         #[arg(long)]
         z_up: bool,
+
+        /// BVH motion capture file to overlay on the mesh skeleton
+        #[arg(long)]
+        bvh: Option<PathBuf>,
+
+        /// Animation clip name or index to play on load (default: first)
+        #[arg(long)]
+        animation: Option<String>,
+
+        /// Uniform scale multiplier (e.g. 50 to scale up a 1-unit model to 50 units)
+        #[arg(long)]
+        scale: Option<f32>,
+
+        /// Skip auto-centering the mesh at the origin
+        #[arg(long)]
+        no_center: bool,
     },
 
     /// Render mesh to PNG without opening a window
@@ -264,6 +280,38 @@ enum Commands {
         /// Camera look-at target as x,y,z (use = for negatives: --camera-target=-1,0,0)
         #[arg(long, value_parser = parse_axis, allow_hyphen_values = true)]
         camera_target: Option<(f32, f32, f32)>,
+
+        /// Animation clip name or index (default: first animation)
+        #[arg(long)]
+        animation: Option<String>,
+
+        /// Render a single animation frame (0-based frame number)
+        #[arg(long)]
+        frame: Option<usize>,
+
+        /// Render a range of animation frames (e.g. "0-15")
+        #[arg(long)]
+        frames: Option<String>,
+
+        /// Number of rotation angles for multi-directional rendering (e.g. 8 for 8-directional)
+        #[arg(long, default_value_t = 1)]
+        angles: u32,
+
+        /// Rotation offset in degrees added to all angle steps (e.g. 5 shifts 0°,45°,90°... to 5°,50°,95°...)
+        #[arg(long, default_value_t = 0.0)]
+        angle_offset: f32,
+
+        /// Compose output into a single sprite sheet atlas PNG
+        #[arg(long)]
+        sprite_sheet: bool,
+
+        /// Uniform scale multiplier (e.g. 50 to scale up a 1-unit model to 50 units)
+        #[arg(long)]
+        scale: Option<f32>,
+
+        /// Skip auto-centering the mesh at the origin
+        #[arg(long)]
+        no_center: bool,
     },
 
     /// Check if mesh is manifold (watertight)
@@ -506,6 +554,45 @@ fn parse_axis(s: &str) -> Result<(f32, f32, f32), String> {
     Ok((x, y, z))
 }
 
+/// Parse a frame range like "0-15" into (start, end), or a single number "5" into (5, 5).
+/// Parse a frame range with optional step: "0-39", "0-39:4", or "5"
+fn parse_frame_range(s: &str) -> Result<(usize, usize, usize), String> {
+    // Split off optional :step suffix
+    let (range_part, step) = if let Some((range, step_str)) = s.split_once(':') {
+        let step = step_str
+            .trim()
+            .parse::<usize>()
+            .map_err(|_| format!("Invalid step value: '{}'", step_str.trim()))?;
+        if step == 0 {
+            return Err("Step value must be > 0".to_string());
+        }
+        (range, step)
+    } else {
+        (s, 1)
+    };
+
+    if let Some((left, right)) = range_part.split_once('-') {
+        let start = left
+            .trim()
+            .parse::<usize>()
+            .map_err(|_| format!("Invalid start frame: '{}'", left.trim()))?;
+        let end = right
+            .trim()
+            .parse::<usize>()
+            .map_err(|_| format!("Invalid end frame: '{}'", right.trim()))?;
+        if end < start {
+            return Err(format!("End frame {} is less than start frame {}", end, start));
+        }
+        Ok((start, end, step))
+    } else {
+        let n = range_part
+            .trim()
+            .parse::<usize>()
+            .map_err(|_| format!("Invalid frame number: '{}'", range_part.trim()))?;
+        Ok((n, n, step))
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -596,6 +683,10 @@ fn main() {
             light_dir,
             preset,
             z_up,
+            bvh,
+            animation,
+            scale,
+            no_center,
         } => {
             use viewer::state::{ProjectionMode, ShadingMode, RenderPreset, ViewerState};
 
@@ -653,6 +744,22 @@ fn main() {
                 }
             };
 
+            // Handle BVH motion capture files (parse-only for now)
+            #[cfg(feature = "remote")]
+            let input_path: Option<&PathBuf> = input.as_ref();
+            #[cfg(not(feature = "remote"))]
+            let input_path: Option<&PathBuf> = Some(&input);
+
+            if let Some(path) = input_path {
+                if path.extension().and_then(|s| s.to_str()) == Some("bvh") {
+                    if let Err(e) = viewer::view_bvh(path, no_vsync, build_state) {
+                        eprintln!("Error viewing BVH: {}", e);
+                        std::process::exit(1);
+                    }
+                    return;
+                }
+            }
+
             #[cfg(feature = "remote")]
             {
                 if remote {
@@ -662,7 +769,7 @@ fn main() {
                     }
                 } else {
                     let input_ref = input.as_ref().expect("input required when not using --remote");
-                    if let Err(e) = viewer::view_mesh(input_ref, mesh.as_deref(), no_vsync, z_up, build_state) {
+                    if let Err(e) = viewer::view_mesh_with_bvh(input_ref, mesh.as_deref(), no_vsync, z_up, bvh.as_ref(), animation.as_deref(), scale, no_center, build_state) {
                         eprintln!("Error viewing mesh: {}", e);
                         std::process::exit(1);
                     }
@@ -670,7 +777,7 @@ fn main() {
             }
             #[cfg(not(feature = "remote"))]
             {
-                if let Err(e) = viewer::view_mesh(&input, mesh.as_deref(), no_vsync, z_up, build_state) {
+                if let Err(e) = viewer::view_mesh_with_bvh(&input, mesh.as_deref(), no_vsync, z_up, bvh.as_ref(), animation.as_deref(), scale, no_center, build_state) {
                     eprintln!("Error viewing mesh: {}", e);
                     std::process::exit(1);
                 }
@@ -694,8 +801,18 @@ fn main() {
             z_up,
             camera_pos,
             camera_target,
+            animation,
+            frame,
+            frames,
+            angles,
+            angle_offset,
+            sprite_sheet,
+            scale,
+            no_center,
         } => {
             use viewer::state::{ProjectionMode, ShadingMode, RenderPreset, ViewerState};
+            use mesh::animation::frame_to_time;
+            use mesh::loader::load_mesh_with_colors;
 
             let build_state = |state: &mut ViewerState| {
                 if let Some(ref preset_name) = preset {
@@ -749,13 +866,205 @@ fn main() {
             };
 
             let out_str = out.to_string_lossy().to_string();
-            if let Err(e) = viewer::headless::render_to_file(
-                &input, &out_str, mesh.as_deref(), width, height, z_up, camera_pos, camera_target, build_state,
-            ) {
-                eprintln!("Error rendering: {}", e);
-                std::process::exit(1);
+
+            // Determine if we're doing animation/sprite-sheet rendering
+            let has_animation_args = frame.is_some() || frames.is_some();
+
+            if !has_animation_args && !sprite_sheet && angles == 1 {
+                // --- Original single-image render path ---
+                if let Err(e) = viewer::headless::render_to_file(
+                    &input, &out_str, mesh.as_deref(), width, height, z_up, camera_pos, camera_target, None, None, scale, no_center, build_state,
+                ) {
+                    eprintln!("Error rendering: {}", e);
+                    std::process::exit(1);
+                }
+                println!("Rendered to {}", out_str);
+            } else {
+                // --- Animation / sprite-sheet render path ---
+
+                // Load mesh to inspect animations
+                let mesh_data = match load_mesh_with_colors(&input, mesh.as_deref()) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        eprintln!("Error loading mesh: {}", e);
+                        std::process::exit(1);
+                    }
+                };
+
+                // Resolve animation index from --animation (name or index)
+                let anim_index: usize = if let Some(ref anim_arg) = animation {
+                    if let Ok(idx) = anim_arg.parse::<usize>() {
+                        if idx >= mesh_data.animations.len() {
+                            eprintln!(
+                                "Animation index {} out of range (model has {} animations)",
+                                idx,
+                                mesh_data.animations.len()
+                            );
+                            std::process::exit(1);
+                        }
+                        idx
+                    } else {
+                        // Search by name
+                        match mesh_data.animations.iter().position(|a| {
+                            a.name.as_deref() == Some(anim_arg.as_str())
+                        }) {
+                            Some(idx) => idx,
+                            None => {
+                                eprintln!("Animation '{}' not found. Available animations:", anim_arg);
+                                for (i, a) in mesh_data.animations.iter().enumerate() {
+                                    eprintln!(
+                                        "  [{}] {}",
+                                        i,
+                                        a.name.as_deref().unwrap_or("<unnamed>")
+                                    );
+                                }
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                } else {
+                    0 // default to first animation
+                };
+
+                if mesh_data.animations.is_empty() {
+                    eprintln!("Error: model has no animations");
+                    std::process::exit(1);
+                }
+
+                let clip = &mesh_data.animations[anim_index];
+
+                // Determine frame range and step
+                let (frame_start, frame_end, frame_step) = if let Some(ref frames_str) = frames {
+                    match parse_frame_range(frames_str) {
+                        Ok(range) => range,
+                        Err(e) => {
+                            eprintln!("Invalid --frames value '{}': {}", frames_str, e);
+                            std::process::exit(1);
+                        }
+                    }
+                } else if let Some(f) = frame {
+                    (f, f, 1)
+                } else {
+                    // No --frame or --frames but --angles or --sprite-sheet was given;
+                    // default to frame 0
+                    (0, 0, 1)
+                };
+
+                let total_frames = frame_end + 1; // total_frames parameter for frame_to_time
+
+                // Compute animation times for each frame (with step)
+                let frame_times: Vec<f32> = (frame_start..=frame_end)
+                    .step_by(frame_step)
+                    .map(|f| frame_to_time(clip, f, total_frames))
+                    .collect();
+                let frame_count = frame_times.len();
+
+                // Compute rotation angles (with optional offset in degrees)
+                let offset_rad = angle_offset.to_radians();
+                let angle_values: Vec<f32> = (0..angles)
+                    .map(|i| i as f32 * std::f32::consts::TAU / angles as f32 + offset_rad)
+                    .collect();
+
+                if frame_count == 1 && angles == 1 && !sprite_sheet {
+                    // Single frame, single angle: use render_to_file directly
+                    let anim_time = frame_times[0];
+                    if let Err(e) = viewer::headless::render_to_file(
+                        &input,
+                        &out_str,
+                        mesh.as_deref(),
+                        width,
+                        height,
+                        z_up,
+                        camera_pos,
+                        camera_target,
+                        Some(anim_index),
+                        Some(anim_time),
+                        scale,
+                        no_center,
+                        build_state,
+                    ) {
+                        eprintln!("Error rendering: {}", e);
+                        std::process::exit(1);
+                    }
+                    println!("Rendered frame {} (t={:.3}s) to {}", frame_start, anim_time, out_str);
+                } else if sprite_sheet {
+                    // Sprite sheet atlas mode
+                    let config = viewer::sprite_sheet::SpriteSheetConfig {
+                        tile_width: width,
+                        tile_height: height,
+                        angles: angle_values.clone(),
+                        frames: frame_times.clone(),
+                        animation_index: anim_index,
+                        transparent_bg,
+                        model_scale: scale.unwrap_or(1.0),
+                    };
+                    match viewer::sprite_sheet::render_sprite_sheet(
+                        &input,
+                        &config,
+                        mesh.as_deref(),
+                        z_up,
+                        build_state,
+                    ) {
+                        Ok((atlas_data, atlas_w, atlas_h)) => {
+                            // Save the atlas PNG
+                            if let Some(parent) = std::path::Path::new(&out_str).parent() {
+                                if !parent.as_os_str().is_empty() {
+                                    if let Err(e) = std::fs::create_dir_all(parent) {
+                                        eprintln!("Error creating output directory: {}", e);
+                                        std::process::exit(1);
+                                    }
+                                }
+                            }
+                            if let Err(e) = image::save_buffer(
+                                &out_str,
+                                &atlas_data,
+                                atlas_w,
+                                atlas_h,
+                                image::ColorType::Rgba8,
+                            ) {
+                                eprintln!("Error saving sprite sheet: {}", e);
+                                std::process::exit(1);
+                            }
+                            let tile_count = frame_count * angles as usize;
+                            println!(
+                                "Rendered {} tiles ({} angles x {} frames) to {}",
+                                tile_count, angles, frame_count, out_str
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("Error rendering sprite sheet: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    // Individual frames mode (--frames and/or --angles without --sprite-sheet)
+                    let config = viewer::sprite_sheet::SpriteSheetConfig {
+                        tile_width: width,
+                        tile_height: height,
+                        angles: angle_values.clone(),
+                        frames: frame_times.clone(),
+                        animation_index: anim_index,
+                        transparent_bg,
+                        model_scale: scale.unwrap_or(1.0),
+                    };
+                    if let Err(e) = viewer::sprite_sheet::render_frames(
+                        &input,
+                        &out_str,
+                        &config,
+                        mesh.as_deref(),
+                        z_up,
+                        build_state,
+                    ) {
+                        eprintln!("Error rendering frames: {}", e);
+                        std::process::exit(1);
+                    }
+                    let tile_count = frame_count * angles as usize;
+                    println!(
+                        "Rendered {} frames ({} angles x {} frames) to {}",
+                        tile_count, angles, frame_count, out_str
+                    );
+                }
             }
-            println!("Rendered to {}", out_str);
         }
         Commands::Check { input, mesh } => {
             if let Err(e) = mesh::check_manifold(&input, mesh.as_deref()) {

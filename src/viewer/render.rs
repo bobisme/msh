@@ -1,6 +1,7 @@
 use nalgebra as na;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 use winit::{
     application::ApplicationHandler,
     event::*,
@@ -9,7 +10,9 @@ use winit::{
     window::{Window, WindowId},
 };
 
+use crate::mesh::animation::{self, AnimationClip};
 use crate::mesh::loader::load_mesh_with_colors;
+use crate::mesh::skeleton::Skeleton;
 
 use super::{
     camera::ArcBallCamera,
@@ -18,6 +21,24 @@ use super::{
     state::{MeshStats, ViewerState},
     ui_renderer::UiRenderer,
 };
+
+/// Animation playback state
+struct AnimationState {
+    /// All animation clips loaded from the mesh
+    clips: Vec<AnimationClip>,
+    /// Index of the currently active clip
+    current_clip: usize,
+    /// Current playback time in seconds
+    time: f32,
+    /// Whether the animation is playing
+    playing: bool,
+    /// Playback speed multiplier
+    speed: f32,
+    /// The skeleton used to compute joint matrices
+    skeleton: Skeleton,
+    /// Last frame instant for delta-time computation
+    last_frame: Instant,
+}
 
 /// Application state for the viewer
 struct ViewerApp {
@@ -32,11 +53,16 @@ struct ViewerApp {
     backface_indices: Vec<u32>,
     has_vertex_colors: bool,
     texture: Option<crate::mesh::loader::TextureData>,
+    skeleton_data: Option<SkeletonRenderData>,
     max_dimension: f32,
     mouse_pressed_left: bool,
     mouse_pressed_right: bool,
     last_mouse_pos: Option<winit::dpi::PhysicalPosition<f64>>,
     vsync: bool,
+    /// Animation playback state (present when skeleton + animations exist)
+    animation: Option<AnimationState>,
+    /// Uniform model scale multiplier
+    model_scale: f32,
 }
 
 impl ViewerApp {
@@ -48,8 +74,11 @@ impl ViewerApp {
         backface_indices: Vec<u32>,
         has_vertex_colors: bool,
         texture: Option<crate::mesh::loader::TextureData>,
+        skeleton_data: Option<SkeletonRenderData>,
         max_dimension: f32,
         vsync: bool,
+        animation: Option<AnimationState>,
+        model_scale: f32,
     ) -> Self {
         Self {
             window: None,
@@ -63,11 +92,14 @@ impl ViewerApp {
             backface_indices,
             has_vertex_colors,
             texture,
+            skeleton_data,
             max_dimension,
             mouse_pressed_left: false,
             mouse_pressed_right: false,
             last_mouse_pos: None,
             vsync,
+            animation,
+            model_scale,
         }
     }
 }
@@ -88,7 +120,7 @@ impl ApplicationHandler for ViewerApp {
             });
 
             // Create camera
-            let camera_distance = self.max_dimension * 2.5;
+            let camera_distance = self.max_dimension * self.model_scale * 2.5;
             let eye = na::Point3::new(
                 camera_distance * 0.5,
                 camera_distance * 0.3,
@@ -100,6 +132,12 @@ impl ApplicationHandler for ViewerApp {
             // Create mesh renderer
             let mut mesh_renderer = MeshRenderer::new(&gpu.device, &gpu.config);
             mesh_renderer.load_mesh(&gpu.device, &gpu.queue, &self.vertices, &self.indices, &self.backface_indices, self.has_vertex_colors, self.texture.as_ref());
+
+            // Set up joint palette if skeleton is present
+            if let Some(ref skel_data) = self.skeleton_data {
+                mesh_renderer.update_joint_palette(&gpu.queue, &skel_data.joint_matrices);
+                mesh_renderer.set_joint_count(skel_data.joint_matrices.len() as u32);
+            }
 
             // Create UI renderer
             let ui_renderer = UiRenderer::new(&gpu.device, &gpu.queue, &gpu.config);
@@ -115,6 +153,10 @@ impl ApplicationHandler for ViewerApp {
             println!("  W: Toggle wireframe overlay");
             println!("  B: Toggle backface visualization (red)");
             println!("  U: Toggle UI overlay");
+            if self.animation.is_some() {
+                println!("  Space: Play/Pause animation");
+                println!("  [/]: Previous/Next animation clip");
+            }
             println!("  Q/ESC: Exit");
         }
     }
@@ -168,6 +210,63 @@ impl ApplicationHandler for ViewerApp {
                                 self.state.show_ui = !self.state.show_ui;
                                 println!("UI overlay: {}", if self.state.show_ui { "ON" } else { "OFF" });
                             }
+                            KeyCode::Space => {
+                                if let Some(ref mut anim) = self.animation {
+                                    anim.playing = !anim.playing;
+                                    if anim.playing {
+                                        // Reset the last_frame so we don't get a huge dt
+                                        anim.last_frame = Instant::now();
+                                    }
+                                    println!(
+                                        "Animation: {}",
+                                        if anim.playing { "PLAYING" } else { "PAUSED" }
+                                    );
+                                    if let Some(window) = self.window.as_ref() {
+                                        window.request_redraw();
+                                    }
+                                }
+                            }
+                            KeyCode::BracketLeft => {
+                                if let Some(ref mut anim) = self.animation {
+                                    if !anim.clips.is_empty() {
+                                        if anim.current_clip == 0 {
+                                            anim.current_clip = anim.clips.len() - 1;
+                                        } else {
+                                            anim.current_clip -= 1;
+                                        }
+                                        anim.time = 0.0;
+                                        let clip = &anim.clips[anim.current_clip];
+                                        println!(
+                                            "Animation clip {}/{}: {}",
+                                            anim.current_clip + 1,
+                                            anim.clips.len(),
+                                            clip.name.as_deref().unwrap_or("<unnamed>")
+                                        );
+                                        if let Some(window) = self.window.as_ref() {
+                                            window.request_redraw();
+                                        }
+                                    }
+                                }
+                            }
+                            KeyCode::BracketRight => {
+                                if let Some(ref mut anim) = self.animation {
+                                    if !anim.clips.is_empty() {
+                                        anim.current_clip =
+                                            (anim.current_clip + 1) % anim.clips.len();
+                                        anim.time = 0.0;
+                                        let clip = &anim.clips[anim.current_clip];
+                                        println!(
+                                            "Animation clip {}/{}: {}",
+                                            anim.current_clip + 1,
+                                            anim.clips.len(),
+                                            clip.name.as_deref().unwrap_or("<unnamed>")
+                                        );
+                                        if let Some(window) = self.window.as_ref() {
+                                            window.request_redraw();
+                                        }
+                                    }
+                                }
+                            }
                             KeyCode::KeyQ | KeyCode::Escape => {
                                 event_loop.exit();
                             }
@@ -219,6 +318,33 @@ impl ApplicationHandler for ViewerApp {
                 }
             }
             WindowEvent::RedrawRequested => {
+                // Advance animation and update joint palette
+                if let Some(ref mut anim) = self.animation {
+                    let now = Instant::now();
+                    if anim.playing {
+                        let dt = now.duration_since(anim.last_frame).as_secs_f32();
+                        anim.time += dt * anim.speed;
+                        let clip = &anim.clips[anim.current_clip];
+                        if clip.duration > 0.0 {
+                            anim.time %= clip.duration;
+                        }
+                    }
+                    anim.last_frame = now;
+
+                    // Evaluate animation at the current time
+                    let clip = &anim.clips[anim.current_clip];
+                    let local_transforms =
+                        animation::evaluate_animation(clip, &anim.skeleton, anim.time);
+                    let joint_matrices =
+                        anim.skeleton.compute_joint_matrices_with_pose(&local_transforms);
+
+                    if let (Some(gpu), Some(mesh_renderer)) =
+                        (self.gpu.as_ref(), self.mesh_renderer.as_ref())
+                    {
+                        mesh_renderer.update_joint_palette(&gpu.queue, &joint_matrices);
+                    }
+                }
+
                 if let (Some(window), Some(gpu), Some(camera), Some(mesh_renderer), Some(ui_renderer)) = (
                     self.window.as_ref(),
                     self.gpu.as_mut(),
@@ -228,7 +354,7 @@ impl ApplicationHandler for ViewerApp {
                 ) {
                     // Update uniforms
                     let view_proj = camera.view_projection_matrix_for(&self.state.projection);
-                    let model = na::Matrix4::identity();
+                    let model = na::Matrix4::new_scaling(self.model_scale);
                     mesh_renderer.update_uniforms(
                         &gpu.queue,
                         &view_proj,
@@ -241,7 +367,18 @@ impl ApplicationHandler for ViewerApp {
 
                     // Queue UI text
                     if self.state.show_ui {
-                        ui_renderer.queue_text(&gpu.device, &gpu.queue, &self.state, false);
+                        let anim_info = self.animation.as_ref().map(|anim| {
+                            let clip = &anim.clips[anim.current_clip];
+                            super::ui_renderer::AnimationInfo {
+                                clip_name: clip.name.clone().unwrap_or_else(|| "<unnamed>".into()),
+                                clip_index: anim.current_clip,
+                                clip_count: anim.clips.len(),
+                                time: anim.time,
+                                duration: clip.duration,
+                                playing: anim.playing,
+                            }
+                        });
+                        ui_renderer.queue_text(&gpu.device, &gpu.queue, &self.state, false, anim_info.as_ref());
                     }
 
                     // Render
@@ -296,10 +433,17 @@ impl ApplicationHandler for ViewerApp {
     }
 }
 
+/// Joint matrices computed from skeleton bind pose (if present)
+pub struct SkeletonRenderData {
+    /// Joint matrices for GPU skinning (world * inverse_bind per joint)
+    pub joint_matrices: Vec<[[f32; 4]; 4]>,
+}
+
 /// Extract rendering data from MeshWithColors
 pub fn extract_render_data(
     mesh_data: &crate::mesh::loader::MeshWithColors,
-) -> (Vec<Vertex>, Vec<u32>, Vec<u32>, bool, f32) {
+    no_center: bool,
+) -> (Vec<Vertex>, Vec<u32>, Vec<u32>, bool, f32, Option<SkeletonRenderData>) {
     let has_vertex_colors = !mesh_data.face_colors.is_empty();
     let has_uvs = !mesh_data.texcoords.is_empty();
     let default_color = [0.0f32; 4];
@@ -313,15 +457,20 @@ pub fn extract_render_data(
             max[i] = max[i].max(pos[i]);
         }
     }
-    let center = [
-        (min[0] + max[0]) / 2.0,
-        (min[1] + max[1]) / 2.0,
-        (min[2] + max[2]) / 2.0,
-    ];
+    let center = if no_center {
+        [0.0, 0.0, 0.0]
+    } else {
+        [
+            (min[0] + max[0]) / 2.0,
+            (min[1] + max[1]) / 2.0,
+            (min[2] + max[2]) / 2.0,
+        ]
+    };
     let size = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
     let max_dimension = size[0].max(size[1]).max(size[2]);
 
-    // Build triangle soup with per-vertex colors and UVs
+    // Build triangle soup with per-vertex colors, UVs, and joint data
+    let has_joints = !mesh_data.joint_indices.is_empty() && !mesh_data.joint_weights.is_empty();
     let mut vertices = Vec::with_capacity(mesh_data.face_indices.len() * 3);
     let mut indices = Vec::with_capacity(mesh_data.face_indices.len() * 3);
     let mut vertex_idx = 0u32;
@@ -340,10 +489,19 @@ pub fn extract_render_data(
             } else {
                 [0.0, 0.0]
             };
+            let (ji, jw) = if has_joints {
+                let src_ji = mesh_data.joint_indices[vi as usize];
+                let src_jw = mesh_data.joint_weights[vi as usize];
+                ([src_ji[0] as u32, src_ji[1] as u32, src_ji[2] as u32, src_ji[3] as u32], src_jw)
+            } else {
+                ([0u32; 4], [0.0f32; 4])
+            };
             vertices.push(Vertex {
                 position: [pos[0] - center[0], pos[1] - center[1], pos[2] - center[2]],
                 color,
                 texcoord: uv,
+                joint_indices: ji,
+                joint_weights: jw,
             });
             indices.push(vertex_idx);
             vertex_idx += 1;
@@ -358,20 +516,61 @@ pub fn extract_render_data(
         backface_indices.push(indices[i + 1]);
     }
 
-    (vertices, indices, backface_indices, has_vertex_colors, max_dimension)
+    // Compute bind-pose joint matrices if skeleton is present
+    let skeleton_data = mesh_data.skeleton.as_ref().map(|skeleton| {
+        SkeletonRenderData {
+            joint_matrices: skeleton.compute_joint_matrices(),
+        }
+    });
+
+    (vertices, indices, backface_indices, has_vertex_colors, max_dimension, skeleton_data)
 }
 
-pub fn view_mesh(
+pub fn view_mesh_with_bvh(
     input: &PathBuf,
     mesh_name: Option<&str>,
     no_vsync: bool,
     z_up: bool,
+    bvh_path: Option<&PathBuf>,
+    initial_animation: Option<&str>,
+    model_scale: Option<f32>,
+    no_center: bool,
     configure_state: impl FnOnce(&mut ViewerState),
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Loading mesh from {:?}...", input);
 
     // Load mesh with color data
     let mut mesh_data = load_mesh_with_colors(input, mesh_name)?;
+
+    // If a BVH file was provided, parse it and map onto the skeleton
+    if let Some(bvh_file) = bvh_path {
+        if let Some(ref skeleton) = mesh_data.skeleton {
+            let bvh_contents = std::fs::read_to_string(bvh_file)?;
+            let bvh_clip = crate::mesh::bvh::parse_bvh(&bvh_contents)
+                .map_err(|e| format!("BVH parse error: {}", e))?;
+
+            let real_joints = bvh_clip.joints.iter().filter(|j| !j.is_end_site).count();
+            println!(
+                "BVH clip: {} joints, {} frames, {:.1}s duration",
+                real_joints,
+                bvh_clip.frame_count,
+                bvh_clip.duration()
+            );
+
+            let joint_mapping = crate::mesh::bvh_mapping::match_bvh_to_skeleton(&bvh_clip, skeleton)
+                .map_err(|e| format!("BVH skeleton matching failed: {}", e))?;
+
+            let anim_clip = crate::mesh::bvh_mapping::bvh_to_animation_clip(&bvh_clip, &joint_mapping);
+            println!(
+                "Converted BVH to animation clip: {} channels, {:.2}s duration",
+                anim_clip.channels.len(),
+                anim_clip.duration
+            );
+            mesh_data.animations.push(anim_clip);
+        } else {
+            return Err("Cannot apply BVH: the loaded mesh has no skeleton".into());
+        }
+    }
 
     if z_up {
         mesh_data.convert_z_up_to_y_up();
@@ -395,8 +594,8 @@ pub fn view_mesh(
     };
 
     // Extract rendering data
-    let (vertices, indices, backface_indices, has_vertex_colors, max_dimension) =
-        extract_render_data(&mesh_data);
+    let (vertices, indices, backface_indices, has_vertex_colors, max_dimension, skeleton_data) =
+        extract_render_data(&mesh_data, no_center);
 
     println!(
         "Extracted {} vertices ({} triangles) as triangle soup{}",
@@ -409,10 +608,64 @@ pub fn view_mesh(
     let mut state = ViewerState::for_mesh(max_dimension, stats);
     configure_state(&mut state);
 
+    // Create animation state if skeleton and animations are present
+    let animation = if !mesh_data.animations.is_empty() && mesh_data.skeleton.is_some() {
+        let skeleton = mesh_data.skeleton.take().unwrap();
+        let clips = std::mem::take(&mut mesh_data.animations);
+        let playing = !clips.is_empty();
+
+        // List available clips
+        if clips.len() > 1 {
+            println!("Available animation clips:");
+            for (i, clip) in clips.iter().enumerate() {
+                let name = clip.name.as_deref().unwrap_or("<unnamed>");
+                println!("  [{}] {} ({:.2}s)", i, name, clip.duration);
+            }
+        } else if let Some(clip) = clips.first() {
+            let name = clip.name.as_deref().unwrap_or("<unnamed>");
+            println!("Animation: {} ({:.2}s)", name, clip.duration);
+        }
+
+        // Resolve initial clip selection
+        let initial_clip = if let Some(sel) = initial_animation {
+            if let Ok(idx) = sel.parse::<usize>() {
+                if idx < clips.len() { idx } else {
+                    eprintln!("Animation index {} out of range (0-{})", idx, clips.len() - 1);
+                    0
+                }
+            } else {
+                clips.iter().position(|c| c.name.as_deref() == Some(sel))
+                    .unwrap_or_else(|| {
+                        eprintln!("Animation '{}' not found, using first clip", sel);
+                        0
+                    })
+            }
+        } else {
+            0
+        };
+
+        if initial_clip != 0 {
+            let name = clips[initial_clip].name.as_deref().unwrap_or("<unnamed>");
+            println!("Playing clip [{}]: {}", initial_clip, name);
+        }
+
+        Some(AnimationState {
+            clips,
+            current_clip: initial_clip,
+            time: 0.0,
+            playing,
+            speed: 1.0,
+            skeleton,
+            last_frame: Instant::now(),
+        })
+    } else {
+        None
+    };
+
     // Create application
     let vsync = !no_vsync;
     let texture = mesh_data.texture;
-    let mut app = ViewerApp::new(state, vertices, indices, backface_indices, has_vertex_colors, texture, max_dimension, vsync);
+    let mut app = ViewerApp::new(state, vertices, indices, backface_indices, has_vertex_colors, texture, skeleton_data, max_dimension, vsync, animation, model_scale.unwrap_or(1.0));
 
     // Create and run event loop
     let event_loop = EventLoop::new()?;

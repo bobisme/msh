@@ -3,6 +3,9 @@ use baby_shark::mesh::corner_table::CornerTableF;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use super::animation::{self, AnimationClip};
+use super::skeleton::{Joint, JointTransform, Skeleton};
+
 /// Embedded texture image data
 pub struct TextureData {
     pub pixels: Vec<u8>,  // RGBA8
@@ -22,6 +25,15 @@ pub struct MeshWithColors {
     pub texcoords: Vec<[f32; 2]>,
     /// Embedded texture (first baseColorTexture found, if any)
     pub texture: Option<TextureData>,
+    /// Skeleton extracted from glTF skin data (None if no skin)
+    pub skeleton: Option<Skeleton>,
+    /// Per-vertex joint indices for skeletal animation (empty if no skin data).
+    /// Indices refer to positions in `skeleton.joints`, NOT glTF node indices.
+    pub joint_indices: Vec<[u16; 4]>,
+    /// Per-vertex joint weights for skeletal animation (empty if no skin data)
+    pub joint_weights: Vec<[f32; 4]>,
+    /// Animation clips extracted from glTF (empty if no animations)
+    pub animations: Vec<AnimationClip>,
 }
 
 impl MeshWithColors {
@@ -175,6 +187,10 @@ fn parse_obj_with_colors(path: &PathBuf) -> Result<MeshWithColors, Box<dyn std::
         face_colors,
         texcoords: Vec::new(),
         texture: None,
+        skeleton: None,
+        joint_indices: Vec::new(),
+        joint_weights: Vec::new(),
+        animations: Vec::new(),
     })
 }
 
@@ -376,13 +392,167 @@ fn load_glb_with_colors(
         })
     }).filter(|t| !t.pixels.is_empty());
 
+    // --- Skin data extraction ---
+    // Find the node that binds the selected mesh to a skin
+    let skin_node = document.nodes().find(|node| {
+        node.mesh().is_some_and(|m| m.index() == selected_mesh.index()) && node.skin().is_some()
+    });
+
+    let (skeleton, joint_indices, joint_weights) = if let Some(node) = skin_node {
+        let skin = node.skin().unwrap();
+        extract_skin_data(&skin, selected_mesh, &document, &buffers)?
+    } else {
+        (None, Vec::new(), Vec::new())
+    };
+
+    // Extract animation clips, mapping node indices to joint indices via the skeleton
+    let joint_node_indices: Option<Vec<usize>> = skeleton.as_ref().map(|s| {
+        s.joints.iter().map(|j| j.node_index).collect()
+    });
+    let animations = animation::extract_animations(
+        &document,
+        &buffers,
+        joint_node_indices.as_deref(),
+    );
+
+    if !animations.is_empty() {
+        println!(
+            "Loaded {} animation clip(s): {}",
+            animations.len(),
+            animations
+                .iter()
+                .map(|a| a.name.as_deref().unwrap_or("<unnamed>"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
+    if let Some(ref skel) = skeleton {
+        println!(
+            "Loaded skeleton with {} joints, {} skinned vertices",
+            skel.joints.len(),
+            joint_indices.len(),
+        );
+    }
+
     Ok(MeshWithColors {
         positions,
         face_indices,
         face_colors,
         texcoords,
         texture,
+        skeleton,
+        joint_indices,
+        joint_weights,
+        animations,
     })
+}
+
+/// Extract skeleton, per-vertex joint indices, and per-vertex weights from a glTF skin.
+fn extract_skin_data(
+    skin: &gltf::Skin<'_>,
+    mesh: &gltf::Mesh<'_>,
+    document: &gltf::Document,
+    buffers: &[gltf::buffer::Data],
+) -> Result<
+    (Option<Skeleton>, Vec<[u16; 4]>, Vec<[f32; 4]>),
+    Box<dyn std::error::Error>,
+> {
+    let get_buf = |buffer: gltf::Buffer<'_>| Some(&*buffers[buffer.index()]);
+
+    // Build parent map: child_node_index -> parent_node_index
+    let mut parent_map: HashMap<usize, usize> = HashMap::new();
+    for node in document.nodes() {
+        for child in node.children() {
+            parent_map.insert(child.index(), node.index());
+        }
+    }
+
+    // Collect joint nodes in skin-order (index in this vec == joint index)
+    let joint_nodes: Vec<gltf::Node<'_>> = skin.joints().collect();
+
+    // Map node_index -> joint_index for parent lookup
+    let node_to_joint: HashMap<usize, usize> = joint_nodes
+        .iter()
+        .enumerate()
+        .map(|(ji, node)| (node.index(), ji))
+        .collect();
+
+    // Read inverse bind matrices (identity if not provided)
+    let identity: [[f32; 4]; 4] = [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+    let skin_reader = skin.reader(get_buf);
+    let ibms: Vec<[[f32; 4]; 4]> = skin_reader
+        .read_inverse_bind_matrices()
+        .map(|iter| iter.collect())
+        .unwrap_or_else(|| vec![identity; joint_nodes.len()]);
+
+    // Build joints
+    let joints: Vec<Joint> = joint_nodes
+        .iter()
+        .enumerate()
+        .map(|(ji, node)| {
+            let parent_joint = parent_map
+                .get(&node.index())
+                .and_then(|parent_node_idx| node_to_joint.get(parent_node_idx))
+                .copied();
+
+            let local_transform = match node.transform() {
+                gltf::scene::Transform::Decomposed {
+                    translation,
+                    rotation,
+                    scale,
+                } => JointTransform::Decomposed {
+                    translation,
+                    rotation,
+                    scale,
+                },
+                gltf::scene::Transform::Matrix { matrix } => JointTransform::Matrix(matrix),
+            };
+
+            Joint {
+                index: ji,
+                node_index: node.index(),
+                name: node.name().map(|s| s.to_string()),
+                parent: parent_joint,
+                inverse_bind_matrix: ibms[ji],
+                local_transform,
+            }
+        })
+        .collect();
+
+    let skeleton = Skeleton { joints };
+
+    // Read per-vertex JOINTS_0 and WEIGHTS_0 from all primitives (concatenated in primitive order)
+    let mut all_joint_indices: Vec<[u16; 4]> = Vec::new();
+    let mut all_joint_weights: Vec<[f32; 4]> = Vec::new();
+
+    for primitive in mesh.primitives() {
+        let reader = primitive.reader(get_buf);
+        let vert_count = reader.read_positions().map(|p| p.count()).unwrap_or(0);
+
+        // Need a fresh reader for joints (the previous one consumed positions)
+        let reader = primitive.reader(get_buf);
+        if let Some(joints_reader) = reader.read_joints(0) {
+            all_joint_indices.extend(joints_reader.into_u16());
+        } else {
+            // No skin data on this primitive — fill with zeros
+            all_joint_indices.extend(std::iter::repeat_n([0u16; 4], vert_count));
+        }
+
+        let reader = primitive.reader(get_buf);
+        if let Some(weights_reader) = reader.read_weights(0) {
+            all_joint_weights.extend(weights_reader.into_f32());
+        } else {
+            all_joint_weights.extend(std::iter::repeat_n([0.0f32; 4], vert_count));
+        }
+    }
+
+    Ok((Some(skeleton), all_joint_indices, all_joint_weights))
 }
 
 // --- 3MF loading ---
@@ -570,6 +740,10 @@ fn load_3mf_with_colors(path: &PathBuf) -> Result<MeshWithColors, Box<dyn std::e
         face_colors,
         texcoords: Vec::new(),
         texture: None,
+        skeleton: None,
+        joint_indices: Vec::new(),
+        joint_weights: Vec::new(),
+        animations: Vec::new(),
     })
 }
 

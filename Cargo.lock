@@ -2591,7 +2591,7 @@ dependencies = [
 
 [[package]]
 name = "mshmash"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "baby_shark",
  "bytemuck",

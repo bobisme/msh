@@ -159,8 +159,8 @@ impl RpcViewerApp {
                                 }
 
                                 // Extract render data
-                                let (vertices, indices, backface_indices, has_vertex_colors, max_dimension) =
-                                    extract_render_data(&mesh_data);
+                                let (vertices, indices, backface_indices, has_vertex_colors, max_dimension, skeleton_data) =
+                                    extract_render_data(&mesh_data, false);
 
                                 self.vertices = vertices;
                                 self.indices = indices;
@@ -172,6 +172,12 @@ impl RpcViewerApp {
                                 // Reload mesh in renderer
                                 if let (Some(gpu), Some(mesh_renderer)) = (self.gpu.as_ref(), self.mesh_renderer.as_mut()) {
                                     mesh_renderer.load_mesh(&gpu.device, &gpu.queue, &self.vertices, &self.indices, &self.backface_indices, self.has_vertex_colors, self.texture.as_ref());
+                                    if let Some(ref skel_data) = skeleton_data {
+                                        mesh_renderer.update_joint_palette(&gpu.queue, &skel_data.joint_matrices);
+                                        mesh_renderer.set_joint_count(skel_data.joint_matrices.len() as u32);
+                                    } else {
+                                        mesh_renderer.set_joint_count(0);
+                                    }
                                 }
 
                                 // Update camera to frame new mesh
@@ -442,7 +448,7 @@ impl ApplicationHandler for RpcViewerApp {
                     // Queue UI text
                     if show_ui
                         && let Ok(state) = self.state.lock() {
-                            ui_renderer.queue_text(&gpu.device, &gpu.queue, &state, true);
+                            ui_renderer.queue_text(&gpu.device, &gpu.queue, &state, true, None);
                         }
 
                     // Render
@@ -539,17 +545,17 @@ pub fn view_mesh_with_rpc(
             hole_count: boundary_rings.len(),
         };
 
-        let (vertices, indices, backface_indices, has_vertex_colors, max_dimension) =
-            extract_render_data(&mesh_data);
+        let (vertices, indices, backface_indices, has_vertex_colors, max_dimension, _skeleton_data) =
+            extract_render_data(&mesh_data, false);
 
         let texture = mesh_data.texture;
         (vertices, indices, backface_indices, has_vertex_colors, texture, max_dimension, stats)
     } else {
         println!("Starting viewer without initial mesh (use 'msh remote load' to load a mesh)...");
         let vertices = vec![
-            Vertex { position: [0.0, 0.0, 0.0], color: [0.0; 4], texcoord: [0.0; 2] },
-            Vertex { position: [0.0, 0.0, 0.0], color: [0.0; 4], texcoord: [0.0; 2] },
-            Vertex { position: [0.0, 0.0, 0.0], color: [0.0; 4], texcoord: [0.0; 2] },
+            Vertex { position: [0.0, 0.0, 0.0], color: [0.0; 4], texcoord: [0.0; 2], joint_indices: [0; 4], joint_weights: [0.0; 4] },
+            Vertex { position: [0.0, 0.0, 0.0], color: [0.0; 4], texcoord: [0.0; 2], joint_indices: [0; 4], joint_weights: [0.0; 4] },
+            Vertex { position: [0.0, 0.0, 0.0], color: [0.0; 4], texcoord: [0.0; 2], joint_indices: [0; 4], joint_weights: [0.0; 4] },
         ];
         let indices = vec![0, 1, 2];
         let backface_indices = vec![0, 2, 1];

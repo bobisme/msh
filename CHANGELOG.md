@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.0] - 2026-03-28
+
+### Added
+- **Skeleton & animation support**: load and play back glTF skeletal animations with GPU skinning.
+- **BVH motion capture overlay**: `--bvh` flag on `msh view` maps BVH motion data onto mesh skeletons with automatic joint name matching.
+- **Standalone BVH viewer**: `msh view file.bvh` renders skeleton motion capture files directly.
+- **Sprite sheet rendering**: `msh render --sprite-sheet` composites animation frames and rotation angles into a single atlas PNG.
+- **Animation frame rendering**: `--frame`, `--frames` (with optional step, e.g. `0-39:4`), and `--angles` flags for batch rendering animation sequences.
+- **Texture rendering**: GLB `baseColorTexture` with UV mapping is now rendered.
+- **`--scale` flag**: uniform scale multiplier for `view` and `render` commands.
+- **`--no-center` flag**: skip auto-centering the mesh at the origin for `view` and `render`.
+- **`--animation` flag**: select animation clip by name or index for `view` and `render`.
+- **`--angle-offset` flag**: rotate all angle steps by a fixed offset in degrees.
+
 ## [0.5.1] - 2026-03-21
 
 ### Fixed

@@ -2,18 +2,25 @@ use bytemuck::{Pod, Zeroable};
 use nalgebra as na;
 use wgpu;
 
-/// Vertex for mesh rendering (position + per-vertex color + UV)
+/// Vertex for mesh rendering (position + per-vertex color + UV + skeletal animation data)
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct Vertex {
     pub position: [f32; 3],
     pub color: [f32; 4],
     pub texcoord: [f32; 2],
+    pub joint_indices: [u32; 4],
+    pub joint_weights: [f32; 4],
 }
 
 impl Vertex {
-    const ATTRIBS: [wgpu::VertexAttribute; 3] =
-        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4, 2 => Float32x2];
+    const ATTRIBS: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+        0 => Float32x3,
+        1 => Float32x4,
+        2 => Float32x2,
+        3 => Uint32x4,
+        4 => Float32x4,
+    ];
 
     pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
         wgpu::VertexBufferLayout {
@@ -36,7 +43,7 @@ pub struct Uniforms {
     pub shading_mode: u32,       // 0=Lit, 1=Flat, 2=Unlit
     pub has_vertex_colors: u32,  // 1=use per-vertex color, 0=use uniform base_color
     pub has_texture: u32,        // 1=sample baseColorTexture, 0=no texture
-    pub _pad3: u32,
+    pub joint_count: u32,        // number of active joints (0 = no skinning)
     pub base_color: [f32; 4],
     pub light_direction: [f32; 3],
     pub _pad4: f32,
@@ -70,6 +77,11 @@ pub struct MeshRenderer {
     // Texture bind group (group 1)
     texture_bind_group: wgpu::BindGroup,
     texture_bind_group_layout: wgpu::BindGroupLayout,
+
+    // Joint palette (group 2)
+    joint_palette_buffer: wgpu::Buffer,
+    joint_palette_bind_group: wgpu::BindGroup,
+    joint_count: u32,
 
     // Depth texture
     depth_texture: wgpu::TextureView,
@@ -147,10 +159,37 @@ impl MeshRenderer {
         let (default_texture_bind_group, _) =
             Self::create_texture_bind_group(device, &texture_bind_group_layout, 1, 1);
 
+        // Create joint palette bind group layout (group 2)
+        let joint_palette_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Joint Palette Bind Group Layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+
+        // Create joint palette buffer (256 mat4x4<f32> = 16384 bytes, default identity)
+        let joint_palette_buffer = Self::create_joint_palette_buffer(device, &[]);
+        let joint_palette_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Joint Palette Bind Group"),
+            layout: &joint_palette_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: joint_palette_buffer.as_entire_binding(),
+            }],
+        });
+
         // Create pipeline layout
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Mesh Pipeline Layout"),
-            bind_group_layouts: &[&bind_group_layout, &texture_bind_group_layout],
+            bind_group_layouts: &[&bind_group_layout, &texture_bind_group_layout, &joint_palette_bind_group_layout],
             push_constant_ranges: &[],
         });
 
@@ -295,6 +334,9 @@ impl MeshRenderer {
             has_texture: false,
             texture_bind_group: default_texture_bind_group,
             texture_bind_group_layout,
+            joint_palette_buffer,
+            joint_palette_bind_group,
+            joint_count: 0,
             depth_texture,
         }
     }
@@ -364,6 +406,51 @@ impl MeshRenderer {
         (bind_group, texture)
     }
 
+    /// Maximum number of joints supported in the palette
+    const MAX_JOINTS: usize = 256;
+    /// Create a joint palette buffer filled with identity matrices,
+    /// optionally overwriting the first `matrices.len()` entries.
+    fn create_joint_palette_buffer(
+        device: &wgpu::Device,
+        matrices: &[[[f32; 4]; 4]],
+    ) -> wgpu::Buffer {
+        let identity: [[f32; 4]; 4] = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let mut data = vec![identity; Self::MAX_JOINTS];
+        let count = matrices.len().min(Self::MAX_JOINTS);
+        data[..count].copy_from_slice(&matrices[..count]);
+
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Joint Palette Buffer"),
+            contents: bytemuck::cast_slice(&data),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        })
+    }
+
+    /// Update the joint palette buffer with new matrices.
+    /// Pads to 256 matrices with identity if fewer are provided.
+    pub fn update_joint_palette(&self, queue: &wgpu::Queue, matrices: &[[[f32; 4]; 4]]) {
+        let identity: [[f32; 4]; 4] = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let mut data = vec![identity; Self::MAX_JOINTS];
+        let count = matrices.len().min(Self::MAX_JOINTS);
+        data[..count].copy_from_slice(&matrices[..count]);
+        queue.write_buffer(&self.joint_palette_buffer, 0, bytemuck::cast_slice(&data));
+    }
+
+    /// Set the joint count (number of active joints for skinning)
+    pub fn set_joint_count(&mut self, count: u32) {
+        self.joint_count = count;
+    }
+
     /// Load mesh data with per-vertex colors and optional texture
     #[allow(clippy::too_many_arguments)]
     pub fn load_mesh(
@@ -427,6 +514,144 @@ impl MeshRenderer {
         self.num_backface_indices = backface_indices.len() as u32;
     }
 
+    /// Load mesh data for dynamic per-frame updates (buffers created with COPY_DST).
+    /// Used by the BVH skeleton viewer where vertex positions change every frame.
+    #[allow(clippy::too_many_arguments)]
+    pub fn load_mesh_dynamic(
+        &mut self,
+        device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        vertices: &[Vertex],
+        indices: &[u32],
+        backface_indices: &[u32],
+        has_vertex_colors: bool,
+        texture_data: Option<&crate::mesh::loader::TextureData>,
+    ) {
+        self.has_vertex_colors = has_vertex_colors;
+        self.has_texture = texture_data.is_some();
+
+        // Allocate with headroom so small frame-to-frame size changes don't require realloc
+        let vert_capacity = vertices.len().max(256);
+        let idx_capacity = indices.len().max(256);
+        let back_capacity = backface_indices.len().max(256);
+
+        // Create vertex buffer with COPY_DST for dynamic updates
+        let vb = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Dynamic Vertex Buffer"),
+            size: (vert_capacity * std::mem::size_of::<Vertex>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: true,
+        });
+        vb.slice(..(vertices.len() * std::mem::size_of::<Vertex>()) as u64)
+            .get_mapped_range_mut()[..bytemuck::cast_slice::<Vertex, u8>(vertices).len()]
+            .copy_from_slice(bytemuck::cast_slice(vertices));
+        vb.unmap();
+        self.vertex_buffer = Some(vb);
+
+        // Create index buffer with COPY_DST
+        let ib = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Dynamic Index Buffer"),
+            size: (idx_capacity * std::mem::size_of::<u32>()) as u64,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: true,
+        });
+        ib.slice(..(indices.len() * std::mem::size_of::<u32>()) as u64)
+            .get_mapped_range_mut()[..bytemuck::cast_slice::<u32, u8>(indices).len()]
+            .copy_from_slice(bytemuck::cast_slice(indices));
+        ib.unmap();
+        self.index_buffer = Some(ib);
+
+        // Create backface index buffer with COPY_DST
+        let bb = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Dynamic Backface Index Buffer"),
+            size: (back_capacity * std::mem::size_of::<u32>()) as u64,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: true,
+        });
+        bb.slice(..(backface_indices.len() * std::mem::size_of::<u32>()) as u64)
+            .get_mapped_range_mut()[..bytemuck::cast_slice::<u32, u8>(backface_indices).len()]
+            .copy_from_slice(bytemuck::cast_slice(backface_indices));
+        bb.unmap();
+        self.backface_index_buffer = Some(bb);
+
+        self.num_indices = indices.len() as u32;
+        self.num_backface_indices = backface_indices.len() as u32;
+    }
+
+    /// Update vertex and index data for a dynamic mesh. Recreates buffers if needed.
+    pub fn update_dynamic_mesh(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        vertices: &[Vertex],
+        indices: &[u32],
+        backface_indices: &[u32],
+    ) {
+        let vert_bytes = bytemuck::cast_slice::<Vertex, u8>(vertices);
+        let idx_bytes = bytemuck::cast_slice::<u32, u8>(indices);
+        let back_bytes = bytemuck::cast_slice::<u32, u8>(backface_indices);
+
+        // Realloc vertex buffer if too small
+        let need_vb_realloc = match &self.vertex_buffer {
+            Some(b) => b.size() < vert_bytes.len() as u64,
+            None => true,
+        };
+        if need_vb_realloc {
+            self.vertex_buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Dynamic Vertex Buffer"),
+                size: (vert_bytes.len() * 2) as u64, // 2x headroom
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        queue.write_buffer(self.vertex_buffer.as_ref().unwrap(), 0, vert_bytes);
+
+        // Realloc index buffer if too small
+        let need_ib_realloc = match &self.index_buffer {
+            Some(b) => b.size() < idx_bytes.len() as u64,
+            None => true,
+        };
+        if need_ib_realloc {
+            self.index_buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Dynamic Index Buffer"),
+                size: (idx_bytes.len() * 2) as u64,
+                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        queue.write_buffer(self.index_buffer.as_ref().unwrap(), 0, idx_bytes);
+
+        // Realloc backface index buffer if too small
+        let need_bb_realloc = match &self.backface_index_buffer {
+            Some(b) => b.size() < back_bytes.len() as u64,
+            None => true,
+        };
+        if need_bb_realloc {
+            self.backface_index_buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Dynamic Backface Index Buffer"),
+                size: (back_bytes.len() * 2) as u64,
+                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        queue.write_buffer(self.backface_index_buffer.as_ref().unwrap(), 0, back_bytes);
+
+        self.num_indices = indices.len() as u32;
+        self.num_backface_indices = backface_indices.len() as u32;
+    }
+
+    /// Get a reference to the vertex buffer (for external writes).
+    #[allow(dead_code)]
+    pub fn vertex_buffer_ref(&self) -> Option<&wgpu::Buffer> {
+        self.vertex_buffer.as_ref()
+    }
+
+    /// Get a reference to the index buffer (for external writes).
+    #[allow(dead_code)]
+    pub fn index_buffer_ref(&self) -> Option<&wgpu::Buffer> {
+        self.index_buffer.as_ref()
+    }
+
     /// Update uniforms
     #[allow(clippy::too_many_arguments)]
     pub fn update_uniforms(
@@ -447,7 +672,7 @@ impl MeshRenderer {
             shading_mode,
             has_vertex_colors: if self.has_vertex_colors { 1 } else { 0 },
             has_texture: if self.has_texture { 1 } else { 0 },
-            _pad3: 0,
+            joint_count: self.joint_count,
             base_color,
             light_direction,
             _pad4: 0.0,
@@ -499,6 +724,7 @@ impl MeshRenderer {
 
         render_pass.set_bind_group(0, &self.bind_group, &[]);
         render_pass.set_bind_group(1, &self.texture_bind_group, &[]);
+        render_pass.set_bind_group(2, &self.joint_palette_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.as_ref().unwrap().slice(..));
         render_pass.set_index_buffer(
             self.index_buffer.as_ref().unwrap().slice(..),

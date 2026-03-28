@@ -1,6 +1,7 @@
 use nalgebra as na;
 use std::path::PathBuf;
 
+use crate::mesh::animation;
 use crate::mesh::loader::load_mesh_with_colors;
 
 use super::{
@@ -21,6 +22,10 @@ pub fn render_to_file(
     z_up: bool,
     camera_pos_override: Option<(f32, f32, f32)>,
     camera_target_override: Option<(f32, f32, f32)>,
+    animation_index: Option<usize>,
+    animation_time: Option<f32>,
+    model_scale: Option<f32>,
+    no_center: bool,
     configure_state: impl FnOnce(&mut ViewerState),
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Load mesh
@@ -41,8 +46,8 @@ pub fn render_to_file(
     };
 
     // Extract render data
-    let (vertices, indices, backface_indices, has_vertex_colors, max_dimension) =
-        extract_render_data(&mesh_data);
+    let (vertices, indices, backface_indices, has_vertex_colors, max_dimension, skeleton_data) =
+        extract_render_data(&mesh_data, no_center);
 
     // Configure state
     let mut state = ViewerState::for_mesh(max_dimension, stats);
@@ -67,11 +72,31 @@ pub fn render_to_file(
     let mut mesh_renderer = MeshRenderer::new(&device, &config);
     mesh_renderer.load_mesh(&device, &queue, &vertices, &indices, &backface_indices, has_vertex_colors, mesh_data.texture.as_ref());
 
+    // Set up joint palette if skeleton is present
+    if let Some(ref skel_data) = skeleton_data {
+        mesh_renderer.update_joint_palette(&queue, &skel_data.joint_matrices);
+        mesh_renderer.set_joint_count(skel_data.joint_matrices.len() as u32);
+    }
+
+    // Apply animation pose if requested
+    if let (Some(anim_idx), Some(anim_t)) = (animation_index, animation_time) {
+        if let Some(ref skeleton) = mesh_data.skeleton {
+            if anim_idx < mesh_data.animations.len() {
+                let clip = &mesh_data.animations[anim_idx];
+                let local_transforms = animation::evaluate_animation(clip, skeleton, anim_t);
+                let joint_matrices = skeleton.compute_joint_matrices_with_pose(&local_transforms);
+                mesh_renderer.update_joint_palette(&queue, &joint_matrices);
+                mesh_renderer.set_joint_count(joint_matrices.len() as u32);
+            }
+        }
+    }
+
     // Set up camera
     let eye = if let Some((x, y, z)) = camera_pos_override {
         na::Point3::new(x, y, z)
     } else {
-        let d = max_dimension * 2.5;
+        let s = model_scale.unwrap_or(1.0);
+        let d = max_dimension * s * 2.5;
         na::Point3::new(d * 0.5, d * 0.3, d)
     };
     let target = if let Some((x, y, z)) = camera_target_override {
@@ -83,7 +108,7 @@ pub fn render_to_file(
 
     // Update uniforms
     let view_proj = camera.view_projection_matrix_for(&state.projection);
-    let model = na::Matrix4::identity();
+    let model = na::Matrix4::new_scaling(model_scale.unwrap_or(1.0));
     mesh_renderer.update_uniforms(
         &queue,
         &view_proj,
@@ -202,7 +227,7 @@ pub fn render_to_file(
 }
 
 /// Create a headless wgpu device (no window surface)
-async fn create_headless_device() -> Result<(wgpu::Device, wgpu::Queue, wgpu::TextureFormat), Box<dyn std::error::Error>> {
+pub async fn create_headless_device() -> Result<(wgpu::Device, wgpu::Queue, wgpu::TextureFormat), Box<dyn std::error::Error>> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
         backends: wgpu::Backends::VULKAN,
         ..Default::default()

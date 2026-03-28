@@ -9,6 +9,16 @@ use font_kit::source::SystemSource;
 
 use super::state::ViewerState;
 
+/// Animation info to display in the UI overlay
+pub struct AnimationInfo {
+    pub clip_name: String,
+    pub clip_index: usize,
+    pub clip_count: usize,
+    pub time: f32,
+    pub duration: f32,
+    pub playing: bool,
+}
+
 /// UI renderer for text overlays
 pub struct UiRenderer {
     brush: TextBrush<FontArc>,
@@ -56,7 +66,7 @@ impl UiRenderer {
     }
 
     /// Queue text for rendering
-    pub fn queue_text(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, state: &ViewerState, rpc_active: bool) {
+    pub fn queue_text(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, state: &ViewerState, rpc_active: bool, animation_info: Option<&AnimationInfo>) {
         let x_offset = 11.0;
         let y_offset = 15.0;
         let line_height = 18.0;
@@ -160,6 +170,65 @@ impl UiRenderer {
                 .with_color(manifold_color)],
             ..Default::default()
         });
+
+        // Animation section
+        let anim_clip_text;
+        let anim_time_text;
+        let anim_status_text;
+        if let Some(info) = animation_info {
+            current_y += line_height;
+            sections.push(Section {
+                screen_position: (x_offset, current_y),
+                text: vec![Text::new("Animation")
+                    .with_scale(header_size)
+                    .with_color([0.8, 0.8, 0.8, 1.0])],
+                ..Default::default()
+            });
+            current_y += line_height + header_padding;
+
+            anim_clip_text = format!(
+                "Clip {}/{}: {}",
+                info.clip_index + 1,
+                info.clip_count,
+                info.clip_name
+            );
+            sections.push(Section {
+                screen_position: (x_offset, current_y),
+                text: vec![Text::new(&anim_clip_text)
+                    .with_scale(text_size)
+                    .with_color([0.9, 0.9, 0.9, 1.0])],
+                ..Default::default()
+            });
+            current_y += line_height;
+
+            anim_time_text = format!("Time: {:.2} / {:.2}s", info.time, info.duration);
+            sections.push(Section {
+                screen_position: (x_offset, current_y),
+                text: vec![Text::new(&anim_time_text)
+                    .with_scale(text_size)
+                    .with_color([0.9, 0.9, 0.9, 1.0])],
+                ..Default::default()
+            });
+            current_y += line_height;
+
+            anim_status_text = if info.playing {
+                "Status: Playing".to_string()
+            } else {
+                "Status: Paused".to_string()
+            };
+            let status_color = if info.playing {
+                [0.4, 1.0, 0.4, 1.0]
+            } else {
+                [1.0, 1.0, 0.4, 1.0]
+            };
+            sections.push(Section {
+                screen_position: (x_offset, current_y),
+                text: vec![Text::new(&anim_status_text)
+                    .with_scale(text_size)
+                    .with_color(status_color)],
+                ..Default::default()
+            });
+        }
 
         // RPC status if active
         if rpc_active {
