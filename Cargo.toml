@@ -52,3 +52,4 @@ crossbeam = { version = "0.8", optional = true }
 
 # RenderDoc integration (feature-gated)
 renderdoc = { version = "0.12", optional = true }
+del-msh-core = "0.1.39"

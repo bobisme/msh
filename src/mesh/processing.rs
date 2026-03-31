@@ -1,4 +1,7 @@
 use baby_shark::algo::merge_points::merge_points;
+use baby_shark::decimation::{
+    AlwaysDecimate, ConstantErrorDecimationCriteria, IncrementalDecimator, QuadricError,
+};
 use baby_shark::exports::nalgebra::Vector3;
 use baby_shark::io::{write_to_file, Builder, IndexedBuilder};
 use baby_shark::mesh::corner_table::CornerTableF;
@@ -487,5 +490,132 @@ pub fn fix_holes(
     write_to_file(&fixed_mesh, output).map_err(|e| format!("Failed to write mesh: {:?}", e))?;
 
     println!("Done!");
+    Ok(())
+}
+
+/// Simplify a mesh using QEM (Quadric Error Metric) edge collapse
+pub fn remesh_simplify(
+    input: &PathBuf,
+    output: &PathBuf,
+    mesh_name: Option<&str>,
+    target_verts: Option<usize>,
+    ratio: Option<f32>,
+    max_error: Option<f32>,
+    keep_boundary: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut mesh = load_mesh(input, mesh_name)?;
+
+    let vertex_count_before = mesh.count_vertices();
+    let face_count_before = mesh.count_faces();
+    println!(
+        "Before: {} vertices, {} faces",
+        vertex_count_before, face_count_before
+    );
+
+    // Compute target face count from --target-verts or --ratio
+    let target_faces = match (target_verts, ratio) {
+        (Some(tv), Some(r)) => {
+            // Use whichever produces fewer faces
+            let from_verts = tv * 2;
+            let from_ratio = (face_count_before as f32 * r) as usize;
+            from_verts.min(from_ratio)
+        }
+        (Some(tv), None) => tv * 2,
+        (None, Some(r)) => (face_count_before as f32 * r) as usize,
+        (None, None) => {
+            return Err("Either --target-verts or --ratio is required".into());
+        }
+    };
+
+    println!("Target: ~{} faces", target_faces);
+
+    let do_decimate = |mesh: &mut CornerTableF, keep_bnd: bool| {
+        if let Some(err) = max_error {
+            let mut decimator = IncrementalDecimator::<
+                f32,
+                QuadricError,
+                ConstantErrorDecimationCriteria<f32>,
+            >::new()
+            .decimation_criteria(ConstantErrorDecimationCriteria::new(err))
+            .min_faces_count(Some(target_faces))
+            .keep_boundary(keep_bnd);
+            decimator.decimate(mesh);
+        } else {
+            let mut decimator =
+                IncrementalDecimator::<f32, QuadricError, AlwaysDecimate>::new()
+                    .min_faces_count(Some(target_faces))
+                    .keep_boundary(keep_bnd);
+            decimator.decimate(mesh);
+        }
+    };
+
+    if keep_boundary {
+        do_decimate(&mut mesh, true);
+    } else {
+        // Try without boundary preservation first (more aggressive simplification).
+        // Fall back to keep_boundary if the mesh has topology that crashes QEM.
+        let mut mesh_clone = mesh.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            do_decimate(&mut mesh_clone, false);
+        }));
+        match result {
+            Ok(()) => mesh = mesh_clone,
+            Err(_) => {
+                eprintln!("Note: aggressive simplification failed, retrying with --keep-boundary");
+                do_decimate(&mut mesh, true);
+            }
+        }
+    }
+
+    let vertex_count_after = mesh.count_vertices();
+    let face_count_after = mesh.count_faces();
+    println!(
+        "After: {} vertices, {} faces",
+        vertex_count_after, face_count_after
+    );
+
+    // baby_shark's write_to_file panics on meshes with deleted vertices from
+    // aggressive QEM. Fall back to manual OBJ writer if it fails.
+    let write_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        write_to_file(&mesh, output)
+    }));
+    match write_result {
+        Ok(Ok(())) => {}
+        _ => {
+            write_corner_table_obj(&mesh, output)?;
+        }
+    }
+    println!("Written to {:?}", output);
+    Ok(())
+}
+
+/// Write a CornerTableF to OBJ, handling deleted vertices/faces from QEM.
+fn write_corner_table_obj(
+    mesh: &CornerTableF,
+    output: &PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::collections::HashMap;
+    use std::io::Write;
+
+    let mut file = std::io::BufWriter::new(std::fs::File::create(output)?);
+    let mut vertex_map: HashMap<baby_shark::mesh::corner_table::VertexId, usize> = HashMap::new();
+    let mut idx = 1usize; // OBJ is 1-indexed
+
+    for vid in mesh.vertices() {
+        let pos = mesh.vertex_position(vid);
+        writeln!(file, "v {} {} {}", pos.x, pos.y, pos.z)?;
+        vertex_map.insert(vid, idx);
+        idx += 1;
+    }
+
+    for fid in mesh.faces() {
+        let (v0, v1, v2) = mesh.face_vertices(fid);
+        if let (Some(&i0), Some(&i1), Some(&i2)) =
+            (vertex_map.get(&v0), vertex_map.get(&v1), vertex_map.get(&v2))
+        {
+            writeln!(file, "f {} {} {}", i0, i1, i2)?;
+        }
+    }
+
     Ok(())
 }

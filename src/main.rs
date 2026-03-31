@@ -40,6 +40,74 @@ enum RemeshCommands {
         target_edge_length: f32,
     },
 
+    /// Simplify mesh using QEM (Quadric Error Metric) edge collapse
+    Simplify {
+        /// Input mesh file (.obj or .glb)
+        input: PathBuf,
+
+        /// Output mesh file (.obj)
+        #[arg(short, long)]
+        out: PathBuf,
+
+        /// Mesh name (required if GLB contains multiple meshes)
+        #[arg(short, long)]
+        mesh: Option<String>,
+
+        /// Target vertex count
+        #[arg(long)]
+        target_verts: Option<usize>,
+
+        /// Target ratio (0.0-1.0, fraction of original face count)
+        #[arg(long)]
+        ratio: Option<f32>,
+
+        /// Maximum quadric error threshold
+        #[arg(long)]
+        max_error: Option<f32>,
+
+        /// Preserve boundary edges
+        #[arg(long)]
+        keep_boundary: bool,
+    },
+
+    /// Project simplified mesh vertices back toward a reference surface
+    Project {
+        /// Input mesh file (simplified mesh)
+        input: PathBuf,
+
+        /// Output mesh file (.obj)
+        #[arg(short, long)]
+        out: PathBuf,
+
+        /// Reference mesh file (original pre-simplification mesh)
+        #[arg(long)]
+        reference: PathBuf,
+
+        /// Mesh name for input (if GLB with multiple meshes)
+        #[arg(short, long)]
+        mesh: Option<String>,
+
+        /// Number of projection iterations (default: 10)
+        #[arg(long, default_value_t = 10)]
+        iterations: usize,
+
+        /// Projection blend weight, 0.0-1.0 (default: 0.5)
+        #[arg(long, default_value_t = 0.5)]
+        alpha: f32,
+
+        /// Laplacian smoothing weight (default: 0.1)
+        #[arg(long, default_value_t = 0.1)]
+        beta: f32,
+
+        /// Dihedral angle threshold for crease detection in degrees (default: 30)
+        #[arg(long, default_value_t = 30.0)]
+        crease_angle: f32,
+
+        /// Crease snap distance (default: auto from average edge length)
+        #[arg(long)]
+        snap_threshold: Option<f32>,
+    },
+
     /// Voxel-based remeshing (converts to SDF then remeshes)
     Voxel {
         /// Input mesh file (.obj or .glb)
@@ -85,11 +153,10 @@ enum Commands {
     /// Remesh a mesh file (fixes then incrementally remeshes, or use subcommands for specific methods)
     Remesh {
         /// Input mesh file (.obj or .glb)
-        #[arg(required_unless_present = "command")]
         input: Option<PathBuf>,
 
         /// Output mesh file (.obj)
-        #[arg(short, long, required_unless_present = "command")]
+        #[arg(short, long)]
         out: Option<PathBuf>,
 
         /// Mesh name (required if GLB contains multiple meshes)
@@ -322,6 +389,36 @@ enum Commands {
         /// Mesh name (required if GLB contains multiple meshes)
         #[arg(short, long)]
         mesh: Option<String>,
+    },
+
+    /// Simplify a mesh for game LODs (voxel remesh + QEM decimation)
+    Clean {
+        /// Input mesh file (.obj or .glb)
+        input: PathBuf,
+
+        /// Output mesh file (.obj)
+        #[arg(short, long)]
+        out: PathBuf,
+
+        /// Mesh name (required if GLB contains multiple meshes)
+        #[arg(short, long)]
+        mesh: Option<String>,
+
+        /// Target vertex count
+        #[arg(long)]
+        target_verts: Option<usize>,
+
+        /// Target ratio (0.0-1.0, fraction of original face count to keep after simplification)
+        #[arg(long)]
+        ratio: Option<f32>,
+
+        /// Override voxel size (default: auto from bounding box)
+        #[arg(long)]
+        voxel_size: Option<f32>,
+
+        /// Voxel grid resolution per axis (default: 250, used for auto voxel size)
+        #[arg(long, default_value_t = 250)]
+        resolution: u32,
     },
 
     /// Fix holes in mesh automatically
@@ -626,6 +723,139 @@ fn main() {
                         eprintln!("Error during incremental remeshing: {}", e);
                         std::process::exit(1);
                     }
+                }
+                Some(RemeshCommands::Simplify {
+                    input,
+                    out,
+                    mesh,
+                    target_verts,
+                    ratio,
+                    max_error,
+                    keep_boundary,
+                }) => {
+                    if let Err(e) = mesh::remesh_simplify(
+                        &input,
+                        &out,
+                        mesh.as_deref(),
+                        target_verts,
+                        ratio,
+                        max_error,
+                        keep_boundary,
+                    ) {
+                        eprintln!("Error during simplification: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+                Some(RemeshCommands::Project {
+                    input,
+                    out,
+                    reference,
+                    mesh,
+                    iterations,
+                    alpha,
+                    beta,
+                    crease_angle,
+                    snap_threshold,
+                }) => {
+                    use mesh::projection::{
+                        average_edge_length, project_with_solver,
+                        ProjectionConfig, SpatialHashGrid,
+                    };
+                    use mesh::loader::load_mesh_with_colors;
+
+                    // Load simplified mesh
+                    let simplified = match load_mesh_with_colors(&input, mesh.as_deref()) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            eprintln!("Error loading simplified mesh: {}", e);
+                            std::process::exit(1);
+                        }
+                    };
+                    let mut positions: Vec<nalgebra::Point3<f32>> = simplified
+                        .positions
+                        .iter()
+                        .map(|p| nalgebra::Point3::new(p[0], p[1], p[2]))
+                        .collect();
+                    let triangles: Vec<[u32; 3]> = simplified
+                        .face_indices
+                        .iter()
+                        .map(|f| [f[0], f[1], f[2]])
+                        .collect();
+
+                    // Load reference mesh
+                    let reference_mesh = match load_mesh_with_colors(&reference, None) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            eprintln!("Error loading reference mesh: {}", e);
+                            std::process::exit(1);
+                        }
+                    };
+                    let ref_positions: Vec<nalgebra::Point3<f32>> = reference_mesh
+                        .positions
+                        .iter()
+                        .map(|p| nalgebra::Point3::new(p[0], p[1], p[2]))
+                        .collect();
+                    let ref_triangles: Vec<[u32; 3]> = reference_mesh
+                        .face_indices
+                        .iter()
+                        .map(|f| [f[0], f[1], f[2]])
+                        .collect();
+
+                    // Build spatial hash from reference mesh
+                    let avg_edge = average_edge_length(&ref_positions, &ref_triangles);
+                    let cell_size = avg_edge * 2.0;
+                    println!(
+                        "Reference mesh: {} verts, {} faces, avg edge length {:.4}",
+                        ref_positions.len(),
+                        ref_triangles.len(),
+                        avg_edge
+                    );
+                    let grid = SpatialHashGrid::new(&ref_positions, &ref_triangles, cell_size);
+
+                    let config = ProjectionConfig {
+                        iterations,
+                        alpha,
+                        beta,
+                        snap_threshold: snap_threshold.unwrap_or(0.0),
+                    };
+
+                    println!(
+                        "Projecting {} vertices ({} iterations, alpha={})...",
+                        positions.len(),
+                        iterations,
+                        alpha,
+                    );
+                    let stats = project_with_solver(
+                        &mut positions,
+                        &triangles,
+                        &grid,
+                        &config,
+                    );
+
+                    println!(
+                        "Done: {} iterations, avg displacement {:.6}, max displacement {:.6}",
+                        stats.iterations_run, stats.avg_displacement, stats.max_displacement
+                    );
+
+                    // Write output OBJ
+                    let out_str = out.to_string_lossy();
+                    let mut obj_content = String::new();
+                    for pos in &positions {
+                        obj_content.push_str(&format!("v {} {} {}\n", pos.x, pos.y, pos.z));
+                    }
+                    for tri in &triangles {
+                        obj_content.push_str(&format!(
+                            "f {} {} {}\n",
+                            tri[0] + 1,
+                            tri[1] + 1,
+                            tri[2] + 1
+                        ));
+                    }
+                    std::fs::write(&out, &obj_content).map_err(|e| {
+                        eprintln!("Error writing output: {}", e);
+                        std::process::exit(1);
+                    }).ok();
+                    println!("Written to {}", out_str);
                 }
                 Some(RemeshCommands::Voxel {
                     input,
@@ -1065,6 +1295,83 @@ fn main() {
                     );
                 }
             }
+        }
+        Commands::Clean {
+            input,
+            out,
+            mesh,
+            target_verts,
+            ratio,
+            voxel_size,
+            resolution,
+        } => {
+            use mesh::loader::load_mesh_with_colors;
+
+            // Load mesh to compute bounding box for auto voxel size
+            let mesh_data = match load_mesh_with_colors(&input, mesh.as_deref()) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("Error loading mesh: {}", e);
+                    std::process::exit(1);
+                }
+            };
+
+            let original_verts = mesh_data.positions.len();
+            let original_faces = mesh_data.face_indices.len();
+            println!("Input: {} vertices, {} faces", original_verts, original_faces);
+
+            // Compute bounding box for auto voxel size
+            let voxel_size = voxel_size.unwrap_or_else(|| {
+                let mut min = [f32::INFINITY; 3];
+                let mut max = [f32::NEG_INFINITY; 3];
+                for pos in &mesh_data.positions {
+                    for i in 0..3 {
+                        min[i] = min[i].min(pos[i]);
+                        max[i] = max[i].max(pos[i]);
+                    }
+                }
+                let max_dim = (max[0] - min[0])
+                    .max(max[1] - min[1])
+                    .max(max[2] - min[2]);
+                let auto_size = max_dim / resolution as f32;
+                println!(
+                    "Auto voxel size: {:.6} (bbox {:.3}, resolution {})",
+                    auto_size, max_dim, resolution
+                );
+                auto_size
+            });
+
+            // Stage 1: Voxel remesh to manifold
+            let tmp_voxel = std::env::temp_dir().join("msh_clean_voxel.obj");
+            println!("Stage 1: Voxel remesh (size {:.6})...", voxel_size);
+            if let Err(e) = mesh::remesh_voxel(
+                &input,
+                &tmp_voxel,
+                mesh.as_deref(),
+                voxel_size,
+                mesh::VoxelMethod::Manifold,
+            ) {
+                eprintln!("Error during voxel remesh: {}", e);
+                std::process::exit(1);
+            }
+
+            // Stage 2: QEM simplify
+            println!("Stage 2: QEM simplify...");
+            if let Err(e) = mesh::remesh_simplify(
+                &tmp_voxel,
+                &out,
+                None,
+                target_verts,
+                ratio,
+                None,
+                false,
+            ) {
+                eprintln!("Error during simplification: {}", e);
+                std::process::exit(1);
+            }
+
+            // Clean up temp file
+            let _ = std::fs::remove_file(&tmp_voxel);
         }
         Commands::Check { input, mesh } => {
             if let Err(e) = mesh::check_manifold(&input, mesh.as_deref()) {
