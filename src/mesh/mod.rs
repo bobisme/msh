@@ -6,6 +6,7 @@ pub mod processing;
 pub mod skeleton;
 
 pub mod projection;
+pub mod writer;
 
 pub use processing::{
     check_manifold, fix_holes, remesh_incremental, remesh_pipeline,

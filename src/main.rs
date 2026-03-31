@@ -1355,11 +1355,12 @@ fn main() {
                 std::process::exit(1);
             }
 
-            // Stage 2: QEM simplify
+            // Stage 2: QEM simplify (always to temp OBJ, then convert to output format)
+            let tmp_simplified = std::env::temp_dir().join("msh_clean_simplified.obj");
             println!("Stage 2: QEM simplify...");
             if let Err(e) = mesh::remesh_simplify(
                 &tmp_voxel,
-                &out,
+                &tmp_simplified,
                 None,
                 target_verts,
                 ratio,
@@ -1370,8 +1371,34 @@ fn main() {
                 std::process::exit(1);
             }
 
-            // Clean up temp file
+            // Write output in the requested format
+            let simplified = match mesh::loader::load_mesh_with_colors(&tmp_simplified, None) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("Error loading simplified mesh: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            let uvs = if simplified.texcoords.is_empty() {
+                None
+            } else {
+                Some(simplified.texcoords.as_slice())
+            };
+            if let Err(e) = mesh::writer::write_mesh(
+                &out,
+                &simplified.positions,
+                &simplified.face_indices,
+                None,
+                uvs,
+            ) {
+                eprintln!("Error writing output: {}", e);
+                std::process::exit(1);
+            }
+            println!("Written to {:?}", out);
+
+            // Clean up temp files
             let _ = std::fs::remove_file(&tmp_voxel);
+            let _ = std::fs::remove_file(&tmp_simplified);
         }
         Commands::Check { input, mesh } => {
             if let Err(e) = mesh::check_manifold(&input, mesh.as_deref()) {
