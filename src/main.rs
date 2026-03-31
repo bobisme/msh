@@ -1355,13 +1355,39 @@ fn main() {
                 std::process::exit(1);
             }
 
+            // Check if voxel output is manifold — if not, fall back to direct QEM
+            let voxel_mesh = match mesh::loader::load_mesh(&tmp_voxel, None) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("Error loading voxel mesh: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            let voxel_is_manifold = voxel_mesh.boundary_rings().is_empty();
+            drop(voxel_mesh);
+
+            let simplify_input = if voxel_is_manifold {
+                println!("Voxel output is manifold, simplifying...");
+                tmp_voxel.clone()
+            } else {
+                let holes = {
+                    let m = mesh::loader::load_mesh(&tmp_voxel, None).unwrap();
+                    m.boundary_rings().len()
+                };
+                eprintln!(
+                    "Warning: voxel output has {} holes, falling back to direct QEM on original",
+                    holes
+                );
+                input.clone()
+            };
+
             // Stage 2: QEM simplify (always to temp OBJ, then convert to output format)
             let tmp_simplified = std::env::temp_dir().join("msh_clean_simplified.obj");
             println!("Stage 2: QEM simplify...");
             if let Err(e) = mesh::remesh_simplify(
-                &tmp_voxel,
+                &simplify_input,
                 &tmp_simplified,
-                None,
+                if voxel_is_manifold { None } else { mesh.as_deref() },
                 target_verts,
                 ratio,
                 None,
