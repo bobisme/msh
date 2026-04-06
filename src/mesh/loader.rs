@@ -747,6 +747,16 @@ fn load_3mf_with_colors(path: &PathBuf) -> Result<MeshWithColors, Box<dyn std::e
     })
 }
 
+/// List all mesh names in a GLB/glTF file (for mesh selection UI).
+/// Returns names in document order; unnamed meshes get "<unnamed>".
+pub fn list_glb_meshes(path: &PathBuf) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let (document, _, _) = gltf::import(path)?;
+    Ok(document
+        .meshes()
+        .map(|m| m.name().unwrap_or("<unnamed>").to_string())
+        .collect())
+}
+
 /// Load mesh from GLB/glTF file (CornerTableF only, for processing)
 pub fn load_mesh_from_glb(
     path: &PathBuf,

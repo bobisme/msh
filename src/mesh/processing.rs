@@ -11,6 +11,18 @@ use std::path::PathBuf;
 
 use super::loader::load_mesh;
 
+/// Run a closure, catching any panic without printing the default panic message.
+fn suppress_panic<F, R>(f: F) -> Result<R, Box<dyn std::any::Any + Send>>
+where
+    F: FnOnce() -> R,
+{
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    std::panic::set_hook(prev_hook);
+    result
+}
+
 /// Merge vertices that are closer than tolerance
 pub fn merge_close_vertices(
     mesh: &CornerTableF,
@@ -555,9 +567,9 @@ pub fn remesh_simplify(
         // Try without boundary preservation first (more aggressive simplification).
         // Fall back to keep_boundary if the mesh has topology that crashes QEM.
         let mut mesh_clone = mesh.clone();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let result = suppress_panic(|| {
             do_decimate(&mut mesh_clone, false);
-        }));
+        });
         match result {
             Ok(()) => mesh = mesh_clone,
             Err(_) => {
@@ -576,9 +588,9 @@ pub fn remesh_simplify(
 
     // baby_shark's write_to_file panics on meshes with deleted vertices from
     // aggressive QEM. Fall back to manual OBJ writer if it fails.
-    let write_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let write_result = suppress_panic(|| {
         write_to_file(&mesh, output)
-    }));
+    });
     match write_result {
         Ok(Ok(())) => {}
         _ => {
@@ -587,6 +599,84 @@ pub fn remesh_simplify(
     }
     println!("Written to {:?}", output);
     Ok(())
+}
+
+/// Transfer bone weights from original mesh to new mesh via nearest-vertex lookup.
+///
+/// For each vertex in `new_positions`, finds the nearest vertex in `orig_positions`
+/// and copies its joint indices and weights. Returns `(joint_indices, joint_weights)`
+/// for the new mesh.
+pub fn transfer_weights_nearest_vertex(
+    orig_positions: &[[f32; 3]],
+    orig_joint_indices: &[[u16; 4]],
+    orig_joint_weights: &[[f32; 4]],
+    new_positions: &[[f32; 3]],
+) -> (Vec<[u16; 4]>, Vec<[f32; 4]>) {
+    let mut new_joint_indices = Vec::with_capacity(new_positions.len());
+    let mut new_joint_weights = Vec::with_capacity(new_positions.len());
+
+    for new_pos in new_positions {
+        let mut best_idx = 0;
+        let mut best_dist_sq = f32::INFINITY;
+
+        for (i, orig_pos) in orig_positions.iter().enumerate() {
+            let dx = new_pos[0] - orig_pos[0];
+            let dy = new_pos[1] - orig_pos[1];
+            let dz = new_pos[2] - orig_pos[2];
+            let dist_sq = dx * dx + dy * dy + dz * dz;
+            if dist_sq < best_dist_sq {
+                best_dist_sq = dist_sq;
+                best_idx = i;
+            }
+        }
+
+        new_joint_indices.push(orig_joint_indices[best_idx]);
+        new_joint_weights.push(orig_joint_weights[best_idx]);
+    }
+
+    (new_joint_indices, new_joint_weights)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_transfer_weights_exact_match() {
+        let orig_pos = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let orig_joints = vec![[0, 1, 0, 0], [1, 2, 0, 0], [2, 0, 0, 0]];
+        let orig_weights = vec![
+            [0.8, 0.2, 0.0, 0.0],
+            [0.6, 0.4, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+        ];
+        // New positions exactly match originals
+        let new_pos = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        let (joints, weights) =
+            transfer_weights_nearest_vertex(&orig_pos, &orig_joints, &orig_weights, &new_pos);
+
+        assert_eq!(joints, vec![[0, 1, 0, 0], [1, 2, 0, 0]]);
+        assert_eq!(weights, vec![[0.8, 0.2, 0.0, 0.0], [0.6, 0.4, 0.0, 0.0]]);
+    }
+
+    #[test]
+    fn test_transfer_weights_nearest_neighbor() {
+        let orig_pos = vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]];
+        let orig_joints = vec![[0, 0, 0, 0], [1, 0, 0, 0]];
+        let orig_weights = vec![[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]];
+
+        // Point closer to vertex 1
+        let new_pos = vec![[7.0, 0.0, 0.0]];
+        let (joints, _) =
+            transfer_weights_nearest_vertex(&orig_pos, &orig_joints, &orig_weights, &new_pos);
+        assert_eq!(joints[0], [1, 0, 0, 0]);
+
+        // Point closer to vertex 0
+        let new_pos = vec![[3.0, 0.0, 0.0]];
+        let (joints, _) =
+            transfer_weights_nearest_vertex(&orig_pos, &orig_joints, &orig_weights, &new_pos);
+        assert_eq!(joints[0], [0, 0, 0, 0]);
+    }
 }
 
 /// Write a CornerTableF to OBJ, handling deleted vertices/faces from QEM.

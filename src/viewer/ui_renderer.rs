@@ -19,6 +19,13 @@ pub struct AnimationInfo {
     pub playing: bool,
 }
 
+/// Mesh selection info to display in the UI overlay (when multiple meshes exist)
+pub struct MeshSelectionInfo {
+    pub name: String,
+    pub index: usize,
+    pub count: usize,
+}
+
 /// UI renderer for text overlays
 pub struct UiRenderer {
     brush: TextBrush<FontArc>,
@@ -66,7 +73,7 @@ impl UiRenderer {
     }
 
     /// Queue text for rendering
-    pub fn queue_text(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, state: &ViewerState, rpc_active: bool, animation_info: Option<&AnimationInfo>) {
+    pub fn queue_text(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, state: &ViewerState, rpc_active: bool, animation_info: Option<&AnimationInfo>, mesh_info: Option<&MeshSelectionInfo>) {
         let x_offset = 11.0;
         let y_offset = 15.0;
         let line_height = 18.0;
@@ -87,15 +94,18 @@ impl UiRenderer {
         });
         current_y += line_height + header_padding;
 
-        let controls = vec![
+        let mut controls = vec![
             "Left Click+Drag: Rotate",
             "Right Click+Drag: Pan",
             "Scroll: Zoom",
             "W: Toggle Wireframe",
             "B: Toggle Backfaces",
             "U: Toggle UI",
-            "Q/ESC: Exit",
         ];
+        if mesh_info.is_some() {
+            controls.push("N/P: Next/Prev Mesh");
+        }
+        controls.push("Q/ESC: Exit");
 
         for control in controls {
             sections.push(Section {
@@ -118,6 +128,20 @@ impl UiRenderer {
             ..Default::default()
         });
         current_y += line_height + header_padding;
+
+        // Mesh name (when multiple meshes exist)
+        let mesh_name_text;
+        if let Some(info) = mesh_info {
+            mesh_name_text = format!("Mesh {}/{}: {}", info.index + 1, info.count, info.name);
+            sections.push(Section {
+                screen_position: (x_offset, current_y),
+                text: vec![Text::new(&mesh_name_text)
+                    .with_scale(text_size)
+                    .with_color([0.9, 0.9, 0.9, 1.0])],
+                ..Default::default()
+            });
+            current_y += line_height;
+        }
 
         // Create owned strings for dynamic content
         let vertices_text = format!("Vertices: {}", state.stats.vertex_count);

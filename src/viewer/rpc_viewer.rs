@@ -448,7 +448,7 @@ impl ApplicationHandler for RpcViewerApp {
                     // Queue UI text
                     if show_ui
                         && let Ok(state) = self.state.lock() {
-                            ui_renderer.queue_text(&gpu.device, &gpu.queue, &state, true, None);
+                            ui_renderer.queue_text(&gpu.device, &gpu.queue, &state, true, None, None);
                         }
 
                     // Render

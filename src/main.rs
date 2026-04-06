@@ -68,6 +68,10 @@ enum RemeshCommands {
         /// Preserve boundary edges
         #[arg(long)]
         keep_boundary: bool,
+
+        /// Transfer bone weights from input to simplified output via nearest-vertex lookup
+        #[arg(long)]
+        preserve_weights: bool,
     },
 
     /// Project simplified mesh vertices back toward a reference surface
@@ -128,6 +132,10 @@ enum RemeshCommands {
         /// Meshing method
         #[arg(short = 'M', long, default_value = "manifold")]
         method: VoxelMethodArg,
+
+        /// Transfer bone weights from input to remeshed output via nearest-vertex lookup
+        #[arg(long)]
+        preserve_weights: bool,
     },
 }
 
@@ -419,6 +427,10 @@ enum Commands {
         /// Voxel grid resolution per axis (default: 250, used for auto voxel size)
         #[arg(long, default_value_t = 250)]
         resolution: u32,
+
+        /// Transfer bone weights from input to output via nearest-vertex lookup
+        #[arg(long)]
+        preserve_weights: bool,
     },
 
     /// Fix holes in mesh automatically
@@ -732,8 +744,77 @@ fn main() {
                     ratio,
                     max_error,
                     keep_boundary,
+                    preserve_weights,
                 }) => {
-                    if let Err(e) = mesh::remesh_simplify(
+                    if preserve_weights {
+                        use mesh::loader::load_mesh_with_colors;
+                        use mesh::writer::SkinData;
+
+                        // Load original mesh with skin data
+                        let original = match load_mesh_with_colors(&input, mesh.as_deref()) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                eprintln!("Error loading mesh: {}", e);
+                                std::process::exit(1);
+                            }
+                        };
+                        if original.skeleton.is_none() || original.joint_indices.is_empty() {
+                            eprintln!("Warning: input has no skin data, --preserve-weights has no effect");
+                        }
+
+                        // Run QEM simplification to a temp file
+                        let tmp_simplified = std::env::temp_dir().join("msh_simplify_weights.obj");
+                        if let Err(e) = mesh::remesh_simplify(
+                            &input,
+                            &tmp_simplified,
+                            mesh.as_deref(),
+                            target_verts,
+                            ratio,
+                            max_error,
+                            keep_boundary,
+                        ) {
+                            eprintln!("Error during simplification: {}", e);
+                            std::process::exit(1);
+                        }
+
+                        // Load simplified mesh geometry
+                        let simplified = match load_mesh_with_colors(&tmp_simplified, None) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                eprintln!("Error loading simplified mesh: {}", e);
+                                std::process::exit(1);
+                            }
+                        };
+                        let _ = std::fs::remove_file(&tmp_simplified);
+
+                        // Transfer weights from original to simplified
+                        let (new_joints, new_weights) = mesh::transfer_weights_nearest_vertex(
+                            &original.positions,
+                            &original.joint_indices,
+                            &original.joint_weights,
+                            &simplified.positions,
+                        );
+
+                        let skin_data = original.skeleton.as_ref().map(|skel| SkinData {
+                            skeleton: skel,
+                            joint_indices: &new_joints,
+                            joint_weights: &new_weights,
+                            animations: &original.animations,
+                        });
+
+                        if let Err(e) = mesh::writer::write_mesh(
+                            &out,
+                            &simplified.positions,
+                            &simplified.face_indices,
+                            None,
+                            None,
+                            skin_data.as_ref(),
+                        ) {
+                            eprintln!("Error writing output: {}", e);
+                            std::process::exit(1);
+                        }
+                        println!("Written to {:?} with skin data", out);
+                    } else if let Err(e) = mesh::remesh_simplify(
                         &input,
                         &out,
                         mesh.as_deref(),
@@ -863,8 +944,75 @@ fn main() {
                     mesh,
                     size,
                     method,
+                    preserve_weights,
                 }) => {
-                    if let Err(e) =
+                    if preserve_weights {
+                        use mesh::loader::load_mesh_with_colors;
+                        use mesh::writer::SkinData;
+
+                        // Load original mesh with skin data
+                        let original = match load_mesh_with_colors(&input, mesh.as_deref()) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                eprintln!("Error loading mesh: {}", e);
+                                std::process::exit(1);
+                            }
+                        };
+                        if original.skeleton.is_none() || original.joint_indices.is_empty() {
+                            eprintln!("Warning: input has no skin data, --preserve-weights has no effect");
+                        }
+
+                        // Voxel remesh to temp file
+                        let tmp_voxel = std::env::temp_dir().join("msh_voxel_weights.obj");
+                        if let Err(e) = mesh::remesh_voxel(
+                            &input,
+                            &tmp_voxel,
+                            mesh.as_deref(),
+                            size,
+                            method.into(),
+                        ) {
+                            eprintln!("Error during voxel remeshing: {}", e);
+                            std::process::exit(1);
+                        }
+
+                        // Load remeshed geometry
+                        let remeshed = match load_mesh_with_colors(&tmp_voxel, None) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                eprintln!("Error loading remeshed mesh: {}", e);
+                                std::process::exit(1);
+                            }
+                        };
+                        let _ = std::fs::remove_file(&tmp_voxel);
+
+                        // Transfer weights
+                        let (new_joints, new_weights) = mesh::transfer_weights_nearest_vertex(
+                            &original.positions,
+                            &original.joint_indices,
+                            &original.joint_weights,
+                            &remeshed.positions,
+                        );
+
+                        let skin_data = original.skeleton.as_ref().map(|skel| SkinData {
+                            skeleton: skel,
+                            joint_indices: &new_joints,
+                            joint_weights: &new_weights,
+                            animations: &original.animations,
+                        });
+
+                        if let Err(e) = mesh::writer::write_mesh(
+                            &out,
+                            &remeshed.positions,
+                            &remeshed.face_indices,
+                            None,
+                            None,
+                            skin_data.as_ref(),
+                        ) {
+                            eprintln!("Error writing output: {}", e);
+                            std::process::exit(1);
+                        }
+                        println!("Written to {:?} with skin data", out);
+                    } else if let Err(e) =
                         mesh::remesh_voxel(&input, &out, mesh.as_deref(), size, method.into())
                     {
                         eprintln!("Error during voxel remeshing: {}", e);
@@ -1304,6 +1452,7 @@ fn main() {
             ratio,
             voxel_size,
             resolution,
+            preserve_weights,
         } => {
             use mesh::loader::load_mesh_with_colors;
 
@@ -1319,6 +1468,10 @@ fn main() {
             let original_verts = mesh_data.positions.len();
             let original_faces = mesh_data.face_indices.len();
             println!("Input: {} vertices, {} faces", original_verts, original_faces);
+
+            if preserve_weights && (mesh_data.skeleton.is_none() || mesh_data.joint_indices.is_empty()) {
+                eprintln!("Warning: input has no skin data, --preserve-weights has no effect");
+            }
 
             // Compute bounding box for auto voxel size
             let voxel_size = voxel_size.unwrap_or_else(|| {
@@ -1355,7 +1508,7 @@ fn main() {
                 std::process::exit(1);
             }
 
-            // Check if voxel output is manifold — if not, fall back to direct QEM
+            // Check manifold status of voxel output
             let voxel_mesh = match mesh::loader::load_mesh(&tmp_voxel, None) {
                 Ok(m) => m,
                 Err(e) => {
@@ -1363,31 +1516,26 @@ fn main() {
                     std::process::exit(1);
                 }
             };
-            let voxel_is_manifold = voxel_mesh.boundary_rings().is_empty();
+            let voxel_holes = voxel_mesh.boundary_rings().len();
             drop(voxel_mesh);
 
-            let simplify_input = if voxel_is_manifold {
+            if voxel_holes == 0 {
                 println!("Voxel output is manifold, simplifying...");
-                tmp_voxel.clone()
             } else {
-                let holes = {
-                    let m = mesh::loader::load_mesh(&tmp_voxel, None).unwrap();
-                    m.boundary_rings().len()
-                };
                 eprintln!(
-                    "Warning: voxel output has {} holes, falling back to direct QEM on original",
-                    holes
+                    "Warning: voxel output has {} hole(s), simplifying anyway",
+                    voxel_holes
                 );
-                input.clone()
-            };
+            }
 
-            // Stage 2: QEM simplify (always to temp OBJ, then convert to output format)
+            // Stage 2: QEM simplify the voxel output (even with holes — it's still
+            // more regular than the original and QEM handles it much better)
             let tmp_simplified = std::env::temp_dir().join("msh_clean_simplified.obj");
             println!("Stage 2: QEM simplify...");
             if let Err(e) = mesh::remesh_simplify(
-                &simplify_input,
+                &tmp_voxel,
                 &tmp_simplified,
-                if voxel_is_manifold { None } else { mesh.as_deref() },
+                None,
                 target_verts,
                 ratio,
                 None,
@@ -1398,7 +1546,7 @@ fn main() {
             }
 
             // Write output in the requested format
-            let simplified = match mesh::loader::load_mesh_with_colors(&tmp_simplified, None) {
+            let simplified = match load_mesh_with_colors(&tmp_simplified, None) {
                 Ok(m) => m,
                 Err(e) => {
                     eprintln!("Error loading simplified mesh: {}", e);
@@ -1410,17 +1558,44 @@ fn main() {
             } else {
                 Some(simplified.texcoords.as_slice())
             };
+
+            // Transfer weights if requested
+            let skin_data_storage;
+            let skin_ref = if preserve_weights && mesh_data.skeleton.is_some() {
+                let (new_joints, new_weights) = mesh::transfer_weights_nearest_vertex(
+                    &mesh_data.positions,
+                    &mesh_data.joint_indices,
+                    &mesh_data.joint_weights,
+                    &simplified.positions,
+                );
+                skin_data_storage = Some((new_joints, new_weights));
+                let (joints, weights) = skin_data_storage.as_ref().unwrap();
+                Some(mesh::writer::SkinData {
+                    skeleton: mesh_data.skeleton.as_ref().unwrap(),
+                    joint_indices: joints,
+                    joint_weights: weights,
+                    animations: &mesh_data.animations,
+                })
+            } else {
+                None
+            };
+
             if let Err(e) = mesh::writer::write_mesh(
                 &out,
                 &simplified.positions,
                 &simplified.face_indices,
                 None,
                 uvs,
+                skin_ref.as_ref(),
             ) {
                 eprintln!("Error writing output: {}", e);
                 std::process::exit(1);
             }
-            println!("Written to {:?}", out);
+            if preserve_weights && mesh_data.skeleton.is_some() {
+                println!("Written to {:?} with skin data", out);
+            } else {
+                println!("Written to {:?}", out);
+            }
 
             // Clean up temp files
             let _ = std::fs::remove_file(&tmp_voxel);

@@ -10,5 +10,6 @@ pub mod writer;
 
 pub use processing::{
     check_manifold, fix_holes, remesh_incremental, remesh_pipeline,
-    remesh_simplify, remesh_voxel, show_stats, VoxelMethod,
+    remesh_simplify, remesh_voxel, show_stats, transfer_weights_nearest_vertex,
+    VoxelMethod,
 };

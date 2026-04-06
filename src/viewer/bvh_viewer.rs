@@ -607,6 +607,7 @@ impl ApplicationHandler for BvhViewerApp {
                             &self.state,
                             false,
                             Some(&anim_info),
+                            None,
                         );
                     }
 

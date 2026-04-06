@@ -63,6 +63,12 @@ struct ViewerApp {
     animation: Option<AnimationState>,
     /// Uniform model scale multiplier
     model_scale: f32,
+    /// For N/P mesh switching: source path and all mesh names in the file
+    input_path: PathBuf,
+    mesh_names: Vec<String>,
+    current_mesh_idx: usize,
+    z_up: bool,
+    no_center: bool,
 }
 
 impl ViewerApp {
@@ -79,6 +85,11 @@ impl ViewerApp {
         vsync: bool,
         animation: Option<AnimationState>,
         model_scale: f32,
+        input_path: PathBuf,
+        mesh_names: Vec<String>,
+        current_mesh_idx: usize,
+        z_up: bool,
+        no_center: bool,
     ) -> Self {
         Self {
             window: None,
@@ -100,6 +111,118 @@ impl ViewerApp {
             vsync,
             animation,
             model_scale,
+            input_path,
+            mesh_names,
+            current_mesh_idx,
+            z_up,
+            no_center,
+        }
+    }
+
+    /// Load the mesh at `new_idx` and rebuild all render data.
+    /// Used by N/P key handlers to switch meshes at runtime.
+    fn switch_to_mesh(&mut self, new_idx: usize) {
+        if new_idx >= self.mesh_names.len() || new_idx == self.current_mesh_idx {
+            return;
+        }
+
+        let name = self.mesh_names[new_idx].clone();
+        let mut mesh_data = match load_mesh_with_colors(&self.input_path, Some(&name)) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("Failed to load mesh '{}': {}", name, e);
+                return;
+            }
+        };
+
+        if self.z_up {
+            mesh_data.convert_z_up_to_y_up();
+        }
+
+        // Rebuild stats from CornerTable
+        let (vertex_count, edge_count, face_count, is_manifold, hole_count) =
+            match mesh_data.to_corner_table() {
+                Ok(m) => {
+                    let boundary_rings = m.boundary_rings();
+                    (
+                        m.count_vertices(),
+                        m.unique_edges().count(),
+                        m.count_faces(),
+                        boundary_rings.is_empty(),
+                        boundary_rings.len(),
+                    )
+                }
+                Err(_) => (0, 0, 0, false, 0),
+            };
+
+        self.state.stats = MeshStats {
+            vertex_count,
+            edge_count,
+            face_count,
+            is_manifold,
+            hole_count,
+        };
+
+        // Extract render data
+        let (vertices, indices, backface_indices, has_vertex_colors, _max_dim, skeleton_data) =
+            extract_render_data(&mesh_data, self.no_center);
+
+        // Rebuild GPU buffers
+        if let (Some(gpu), Some(mesh_renderer)) = (self.gpu.as_ref(), self.mesh_renderer.as_mut()) {
+            mesh_renderer.load_mesh(
+                &gpu.device,
+                &gpu.queue,
+                &vertices,
+                &indices,
+                &backface_indices,
+                has_vertex_colors,
+                mesh_data.texture.as_ref(),
+            );
+
+            // Update joint palette if skeleton is present
+            if let Some(ref skel_data) = skeleton_data {
+                mesh_renderer.update_joint_palette(&gpu.queue, &skel_data.joint_matrices);
+                mesh_renderer.set_joint_count(skel_data.joint_matrices.len() as u32);
+            } else {
+                mesh_renderer.set_joint_count(0);
+            }
+        }
+
+        self.vertices = vertices;
+        self.indices = indices;
+        self.backface_indices = backface_indices;
+        self.has_vertex_colors = has_vertex_colors;
+        self.texture = mesh_data.texture.take();
+        self.skeleton_data = skeleton_data;
+        self.current_mesh_idx = new_idx;
+
+        // Rebuild animation state from this mesh's skeleton + clips
+        if !mesh_data.animations.is_empty() && mesh_data.skeleton.is_some() {
+            let skeleton = mesh_data.skeleton.take().unwrap();
+            let clips = std::mem::take(&mut mesh_data.animations);
+            let playing = !clips.is_empty();
+            self.animation = Some(AnimationState {
+                clips,
+                current_clip: 0,
+                time: 0.0,
+                playing,
+                speed: 1.0,
+                skeleton,
+                last_frame: Instant::now(),
+            });
+        } else {
+            self.animation = None;
+        }
+
+        println!(
+            "Mesh {}/{}: {}",
+            self.current_mesh_idx + 1,
+            self.mesh_names.len(),
+            self.mesh_names[self.current_mesh_idx]
+        );
+
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
         }
     }
 }
@@ -156,6 +279,9 @@ impl ApplicationHandler for ViewerApp {
             if self.animation.is_some() {
                 println!("  Space: Play/Pause animation");
                 println!("  [/]: Previous/Next animation clip");
+            }
+            if self.mesh_names.len() > 1 {
+                println!("  N/P: Next/Previous mesh");
             }
             println!("  Q/ESC: Exit");
         }
@@ -265,6 +391,22 @@ impl ApplicationHandler for ViewerApp {
                                             window.request_redraw();
                                         }
                                     }
+                                }
+                            }
+                            KeyCode::KeyN => {
+                                if self.mesh_names.len() > 1 {
+                                    let next = (self.current_mesh_idx + 1) % self.mesh_names.len();
+                                    self.switch_to_mesh(next);
+                                }
+                            }
+                            KeyCode::KeyP => {
+                                if self.mesh_names.len() > 1 {
+                                    let prev = if self.current_mesh_idx == 0 {
+                                        self.mesh_names.len() - 1
+                                    } else {
+                                        self.current_mesh_idx - 1
+                                    };
+                                    self.switch_to_mesh(prev);
                                 }
                             }
                             KeyCode::KeyQ | KeyCode::Escape => {
@@ -378,7 +520,16 @@ impl ApplicationHandler for ViewerApp {
                                 playing: anim.playing,
                             }
                         });
-                        ui_renderer.queue_text(&gpu.device, &gpu.queue, &self.state, false, anim_info.as_ref());
+                        let mesh_info = if self.mesh_names.len() > 1 {
+                            Some(super::ui_renderer::MeshSelectionInfo {
+                                name: self.mesh_names[self.current_mesh_idx].clone(),
+                                index: self.current_mesh_idx,
+                                count: self.mesh_names.len(),
+                            })
+                        } else {
+                            None
+                        };
+                        ui_renderer.queue_text(&gpu.device, &gpu.queue, &self.state, false, anim_info.as_ref(), mesh_info.as_ref());
                     }
 
                     // Render
@@ -539,8 +690,38 @@ pub fn view_mesh_with_bvh(
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Loading mesh from {:?}...", input);
 
+    // If the input is a GLB, enumerate its meshes so we can switch between them.
+    let is_glb = input
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.eq_ignore_ascii_case("glb") || s.eq_ignore_ascii_case("gltf"))
+        .unwrap_or(false);
+
+    let mesh_names: Vec<String> = if is_glb {
+        crate::mesh::loader::list_glb_meshes(input).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    // Resolve which mesh to load initially.
+    let (resolved_mesh_name, current_mesh_idx) = if mesh_names.is_empty() {
+        (mesh_name.map(String::from), 0)
+    } else if let Some(name) = mesh_name {
+        let idx = mesh_names.iter().position(|n| n == name).unwrap_or(0);
+        (Some(name.to_string()), idx)
+    } else {
+        // No --mesh given: default to first, and if there are multiple, print the list.
+        if mesh_names.len() > 1 {
+            println!("GLB contains {} meshes (use N/P to switch):", mesh_names.len());
+            for (i, name) in mesh_names.iter().enumerate() {
+                println!("  [{}] {}", i, name);
+            }
+        }
+        (Some(mesh_names[0].clone()), 0)
+    };
+
     // Load mesh with color data
-    let mut mesh_data = load_mesh_with_colors(input, mesh_name)?;
+    let mut mesh_data = load_mesh_with_colors(input, resolved_mesh_name.as_deref())?;
 
     // If a BVH file was provided, parse it and map onto the skeleton
     if let Some(bvh_file) = bvh_path {
@@ -665,7 +846,24 @@ pub fn view_mesh_with_bvh(
     // Create application
     let vsync = !no_vsync;
     let texture = mesh_data.texture;
-    let mut app = ViewerApp::new(state, vertices, indices, backface_indices, has_vertex_colors, texture, skeleton_data, max_dimension, vsync, animation, model_scale.unwrap_or(1.0));
+    let mut app = ViewerApp::new(
+        state,
+        vertices,
+        indices,
+        backface_indices,
+        has_vertex_colors,
+        texture,
+        skeleton_data,
+        max_dimension,
+        vsync,
+        animation,
+        model_scale.unwrap_or(1.0),
+        input.clone(),
+        mesh_names,
+        current_mesh_idx,
+        z_up,
+        no_center,
+    );
 
     // Create and run event loop
     let event_loop = EventLoop::new()?;
