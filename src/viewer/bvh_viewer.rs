@@ -236,6 +236,8 @@ fn add_octahedron_bone_scaled(
             texcoord: [0.0, 0.0],
             joint_indices: [0; 4],
             joint_weights: [0.0; 4],
+            normal: [0.0; 3],
+            tangent: [0.0; 4],
         }
     };
 
@@ -279,6 +281,8 @@ fn add_joint_marker(
             texcoord: [0.0, 0.0],
             joint_indices: [0; 4],
             joint_weights: [0.0; 4],
+            normal: [0.0; 3],
+            tangent: [0.0; 4],
         }
     };
 
@@ -393,7 +397,7 @@ impl ApplicationHandler for BvhViewerApp {
                 }
             }
 
-            let mut mesh_renderer = MeshRenderer::new(&gpu.device, &gpu.config);
+            let mut mesh_renderer = MeshRenderer::new(&gpu.device, &gpu.queue, &gpu.config);
             mesh_renderer.load_mesh_dynamic(
                 &gpu.device,
                 &gpu.queue,
@@ -401,7 +405,6 @@ impl ApplicationHandler for BvhViewerApp {
                 &idx,
                 &backface_indices,
                 true, // has_vertex_colors
-                None, // no texture
             );
 
             let ui_renderer = UiRenderer::new(&gpu.device, &gpu.queue, &gpu.config);
@@ -589,6 +592,7 @@ impl ApplicationHandler for BvhViewerApp {
                         self.state.shading.as_u32(),
                         self.state.base_color,
                         self.state.light_direction,
+                        self.state.background,
                     );
 
                     // Queue UI text
@@ -629,7 +633,6 @@ impl ApplicationHandler for BvhViewerApp {
                                 &view,
                                 self.state.show_wireframe,
                                 false, // no backface viz for skeleton
-                                self.state.clear_color,
                             );
 
                             if self.state.show_ui {
@@ -741,7 +744,7 @@ pub fn view_bvh(
     let mut state = ViewerState::for_mesh(max_dimension, stats);
     // Use unlit shading for the skeleton — we have vertex colors and don't need lighting artifacts
     state.shading = super::state::ShadingMode::Flat;
-    state.clear_color = [0.08, 0.08, 0.12, 1.0]; // dark blue-gray background
+    state.background = super::state::Background::Solid([0.08, 0.08, 0.12, 1.0]); // dark blue-gray background
     configure_state(&mut state);
 
     let vsync = !no_vsync;

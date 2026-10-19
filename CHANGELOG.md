@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **Per-primitive glTF materials** (bn-uhc): each primitive is drawn as its own batch with its own material instead of every primitive using the first `baseColorTexture`. Applies to `view`, `view --remote`, `render`, and sprite sheets.
+- `doubleSided` materials are no longer back-face culled; `alphaMode` `MASK` (with `alphaCutoff`) and `BLEND` are honored, with blended materials drawn after opaque ones.
+
+### Added
+- Normal maps, metallic-roughness, and occlusion textures; vertex normals and tangents are used for lit shading (skinned along with positions).
+- Hemisphere ambient fill in `lit` shading so PBR assets stay readable on their unlit sides.
+- Mipmapped, anisotropically filtered material textures.
+
+### Changed
+- Default background is now a dithered radial gradient (black center to dark gray edges) instead of solid black, in `view` and `render`. `--clear-color`, `--transparent-bg`, `remote set-clear-color`, and `--preset sprite-bake` still give a solid background.
+
 ## [0.6.0] - 2026-03-28
 
 ### Added

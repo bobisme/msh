@@ -38,6 +38,25 @@ impl ShadingMode {
     }
 }
 
+/// What fills the frame behind the mesh. Colors are linear RGBA, like wgpu clear colors.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Background {
+    Solid([f32; 4]),
+    /// Smooth radial gradient from `center` (middle of the frame) to `edge` (corners)
+    RadialGradient { center: [f32; 4], edge: [f32; 4] },
+}
+
+impl Default for Background {
+    /// Black in the middle fading to dark gray at the edges
+    fn default() -> Self {
+        Background::RadialGradient {
+            center: [0.0, 0.0, 0.0, 1.0],
+            // ~sRGB 0.2 (51/255)
+            edge: [0.033, 0.033, 0.033, 1.0],
+        }
+    }
+}
+
 /// Thread-safe viewer state that can be shared between RPC and render threads
 #[derive(Debug, Clone)]
 pub struct ViewerState {
@@ -51,8 +70,8 @@ pub struct ViewerState {
     pub stats: MeshStats,
     /// Projection mode
     pub projection: ProjectionMode,
-    /// Clear color (RGBA)
-    pub clear_color: [f32; 4],
+    /// Background behind the mesh
+    pub background: Background,
     /// Shading mode
     pub shading: ShadingMode,
     /// Base color override (RGBA)
@@ -79,7 +98,7 @@ impl Default for ViewerState {
             show_ui: true,
             stats: MeshStats::default(),
             projection: ProjectionMode::default(),
-            clear_color: [0.0, 0.0, 0.0, 1.0],
+            background: Background::default(),
             shading: ShadingMode::default(),
             base_color: [0.85, 0.85, 0.85, 1.0],
             light_direction: [0.5, 1.0, 0.5],
@@ -161,7 +180,7 @@ pub enum ViewerCommand {
 #[derive(Debug, Clone)]
 pub struct RenderPreset {
     pub projection: ProjectionMode,
-    pub clear_color: [f32; 4],
+    pub background: Background,
     pub shading: ShadingMode,
     pub base_color: [f32; 4],
     pub light_direction: [f32; 3],
@@ -175,7 +194,7 @@ impl RenderPreset {
     pub fn viewer() -> Self {
         Self {
             projection: ProjectionMode::Perspective { fov_y_degrees: 45.0 },
-            clear_color: [0.0, 0.0, 0.0, 1.0],
+            background: Background::default(),
             shading: ShadingMode::Lit,
             base_color: [0.85, 0.85, 0.85, 1.0],
             light_direction: [0.5, 1.0, 0.5],
@@ -189,7 +208,7 @@ impl RenderPreset {
     pub fn sprite_bake() -> Self {
         Self {
             projection: ProjectionMode::Orthographic { world_height: 10.0 },
-            clear_color: [0.0, 0.0, 0.0, 0.0],
+            background: Background::Solid([0.0, 0.0, 0.0, 0.0]),
             shading: ShadingMode::Flat,
             base_color: [0.85, 0.85, 0.85, 1.0],
             light_direction: [0.5, 1.0, 0.8],
@@ -218,7 +237,7 @@ impl ViewerState {
             show_ui: true,
             stats,
             projection: ProjectionMode::default(),
-            clear_color: [0.0, 0.0, 0.0, 1.0],
+            background: Background::default(),
             shading: ShadingMode::default(),
             base_color: [0.85, 0.85, 0.85, 1.0],
             light_direction: [0.5, 1.0, 0.5],
@@ -228,7 +247,7 @@ impl ViewerState {
     /// Apply a render preset to this state
     pub fn apply_preset(&mut self, preset: &RenderPreset) {
         self.projection = preset.projection.clone();
-        self.clear_color = preset.clear_color;
+        self.background = preset.background;
         self.shading = preset.shading;
         self.base_color = preset.base_color;
         self.light_direction = preset.light_direction;

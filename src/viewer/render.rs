@@ -11,13 +11,13 @@ use winit::{
 };
 
 use crate::mesh::animation::{self, AnimationClip};
-use crate::mesh::loader::load_mesh_with_colors;
+use crate::mesh::loader::{MeshMaterials, NO_MATERIAL, load_mesh_with_colors};
 use crate::mesh::skeleton::Skeleton;
 
 use super::{
     camera::ArcBallCamera,
     gpu::GpuState,
-    mesh_renderer::{MeshRenderer, Vertex},
+    mesh_renderer::{DrawBatch, MeshRenderer, Vertex},
     state::{MeshStats, ViewerState},
     ui_renderer::UiRenderer,
 };
@@ -48,13 +48,8 @@ struct ViewerApp {
     mesh_renderer: Option<MeshRenderer>,
     ui_renderer: Option<UiRenderer>,
     state: ViewerState,
-    vertices: Vec<Vertex>,
-    indices: Vec<u32>,
-    backface_indices: Vec<u32>,
-    has_vertex_colors: bool,
-    texture: Option<crate::mesh::loader::TextureData>,
-    skeleton_data: Option<SkeletonRenderData>,
-    max_dimension: f32,
+    render_mesh: RenderMesh,
+    materials: MeshMaterials,
     mouse_pressed_left: bool,
     mouse_pressed_right: bool,
     last_mouse_pos: Option<winit::dpi::PhysicalPosition<f64>>,
@@ -75,13 +70,8 @@ impl ViewerApp {
     #[allow(clippy::too_many_arguments)]
     fn new(
         state: ViewerState,
-        vertices: Vec<Vertex>,
-        indices: Vec<u32>,
-        backface_indices: Vec<u32>,
-        has_vertex_colors: bool,
-        texture: Option<crate::mesh::loader::TextureData>,
-        skeleton_data: Option<SkeletonRenderData>,
-        max_dimension: f32,
+        render_mesh: RenderMesh,
+        materials: MeshMaterials,
         vsync: bool,
         animation: Option<AnimationState>,
         model_scale: f32,
@@ -98,13 +88,8 @@ impl ViewerApp {
             mesh_renderer: None,
             ui_renderer: None,
             state,
-            vertices,
-            indices,
-            backface_indices,
-            has_vertex_colors,
-            texture,
-            skeleton_data,
-            max_dimension,
+            render_mesh,
+            materials,
             mouse_pressed_left: false,
             mouse_pressed_right: false,
             last_mouse_pos: None,
@@ -164,23 +149,15 @@ impl ViewerApp {
         };
 
         // Extract render data
-        let (vertices, indices, backface_indices, has_vertex_colors, _max_dim, skeleton_data) =
-            extract_render_data(&mesh_data, self.no_center);
+        let render_mesh = extract_render_data(&mesh_data, self.no_center);
+        let materials = std::mem::take(&mut mesh_data.materials);
 
         // Rebuild GPU buffers
         if let (Some(gpu), Some(mesh_renderer)) = (self.gpu.as_ref(), self.mesh_renderer.as_mut()) {
-            mesh_renderer.load_mesh(
-                &gpu.device,
-                &gpu.queue,
-                &vertices,
-                &indices,
-                &backface_indices,
-                has_vertex_colors,
-                mesh_data.texture.as_ref(),
-            );
+            mesh_renderer.load_mesh(&gpu.device, &gpu.queue, &render_mesh, &materials);
 
             // Update joint palette if skeleton is present
-            if let Some(ref skel_data) = skeleton_data {
+            if let Some(ref skel_data) = render_mesh.skeleton_data {
                 mesh_renderer.update_joint_palette(&gpu.queue, &skel_data.joint_matrices);
                 mesh_renderer.set_joint_count(skel_data.joint_matrices.len() as u32);
             } else {
@@ -188,12 +165,8 @@ impl ViewerApp {
             }
         }
 
-        self.vertices = vertices;
-        self.indices = indices;
-        self.backface_indices = backface_indices;
-        self.has_vertex_colors = has_vertex_colors;
-        self.texture = mesh_data.texture.take();
-        self.skeleton_data = skeleton_data;
+        self.render_mesh = render_mesh;
+        self.materials = materials;
         self.current_mesh_idx = new_idx;
 
         // Rebuild animation state from this mesh's skeleton + clips
@@ -243,7 +216,7 @@ impl ApplicationHandler for ViewerApp {
             });
 
             // Create camera
-            let camera_distance = self.max_dimension * self.model_scale * 2.5;
+            let camera_distance = self.render_mesh.max_dimension * self.model_scale * 2.5;
             let eye = na::Point3::new(
                 camera_distance * 0.5,
                 camera_distance * 0.3,
@@ -253,11 +226,11 @@ impl ApplicationHandler for ViewerApp {
             let camera = ArcBallCamera::new(eye, target, size.width, size.height);
 
             // Create mesh renderer
-            let mut mesh_renderer = MeshRenderer::new(&gpu.device, &gpu.config);
-            mesh_renderer.load_mesh(&gpu.device, &gpu.queue, &self.vertices, &self.indices, &self.backface_indices, self.has_vertex_colors, self.texture.as_ref());
+            let mut mesh_renderer = MeshRenderer::new(&gpu.device, &gpu.queue, &gpu.config);
+            mesh_renderer.load_mesh(&gpu.device, &gpu.queue, &self.render_mesh, &self.materials);
 
             // Set up joint palette if skeleton is present
-            if let Some(ref skel_data) = self.skeleton_data {
+            if let Some(ref skel_data) = self.render_mesh.skeleton_data {
                 mesh_renderer.update_joint_palette(&gpu.queue, &skel_data.joint_matrices);
                 mesh_renderer.set_joint_count(skel_data.joint_matrices.len() as u32);
             }
@@ -505,6 +478,7 @@ impl ApplicationHandler for ViewerApp {
                         self.state.shading.as_u32(),
                         self.state.base_color,
                         self.state.light_direction,
+                        self.state.background,
                     );
 
                     // Queue UI text
@@ -552,7 +526,6 @@ impl ApplicationHandler for ViewerApp {
                                 &view,
                                 self.state.show_wireframe,
                                 self.state.show_backfaces,
-                                self.state.clear_color,
                             );
 
                             // Render UI
@@ -590,13 +563,27 @@ pub struct SkeletonRenderData {
     pub joint_matrices: Vec<[[f32; 4]; 4]>,
 }
 
+/// CPU-side render data for a mesh: a triangle soup whose faces are grouped by material
+pub struct RenderMesh {
+    pub vertices: Vec<Vertex>,
+    pub indices: Vec<u32>,
+    pub backface_indices: Vec<u32>,
+    /// Contiguous index ranges sharing one material, covering all of `indices`
+    pub batches: Vec<DrawBatch>,
+    pub has_vertex_colors: bool,
+    pub max_dimension: f32,
+    pub skeleton_data: Option<SkeletonRenderData>,
+}
+
 /// Extract rendering data from MeshWithColors
 pub fn extract_render_data(
     mesh_data: &crate::mesh::loader::MeshWithColors,
     no_center: bool,
-) -> (Vec<Vertex>, Vec<u32>, Vec<u32>, bool, f32, Option<SkeletonRenderData>) {
+) -> RenderMesh {
     let has_vertex_colors = !mesh_data.face_colors.is_empty();
     let has_uvs = !mesh_data.texcoords.is_empty();
+    let has_normals = !mesh_data.normals.is_empty();
+    let has_tangents = !mesh_data.tangents.is_empty();
     let default_color = [0.0f32; 4];
 
     // Calculate bounding box
@@ -620,13 +607,35 @@ pub fn extract_render_data(
     let size = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
     let max_dimension = size[0].max(size[1]).max(size[2]);
 
-    // Build triangle soup with per-vertex colors, UVs, and joint data
+    // Group faces by material (stable, so primitive order is kept within a material)
+    let face_material = |face_i: usize| -> Option<usize> {
+        match mesh_data.face_materials.get(face_i) {
+            Some(&m) if m != NO_MATERIAL => Some(m as usize),
+            _ => None,
+        }
+    };
+    let mut face_order: Vec<usize> = (0..mesh_data.face_indices.len()).collect();
+    face_order.sort_by_key(|&f| face_material(f).unwrap_or(usize::MAX));
+
+    // Build triangle soup with per-vertex colors, UVs, normals, and joint data
     let has_joints = !mesh_data.joint_indices.is_empty() && !mesh_data.joint_weights.is_empty();
     let mut vertices = Vec::with_capacity(mesh_data.face_indices.len() * 3);
     let mut indices = Vec::with_capacity(mesh_data.face_indices.len() * 3);
+    let mut batches: Vec<DrawBatch> = Vec::new();
     let mut vertex_idx = 0u32;
 
-    for (face_i, tri) in mesh_data.face_indices.iter().enumerate() {
+    for face_i in face_order {
+        let tri = &mesh_data.face_indices[face_i];
+        let material = face_material(face_i);
+        match batches.last_mut() {
+            Some(batch) if batch.material == material => batch.index_count += 3,
+            _ => batches.push(DrawBatch {
+                first_index: indices.len() as u32,
+                index_count: 3,
+                material,
+            }),
+        }
+
         let color = if has_vertex_colors {
             mesh_data.face_colors[face_i]
         } else {
@@ -640,6 +649,8 @@ pub fn extract_render_data(
             } else {
                 [0.0, 0.0]
             };
+            let normal = if has_normals { mesh_data.normals[vi as usize] } else { [0.0; 3] };
+            let tangent = if has_tangents { mesh_data.tangents[vi as usize] } else { [0.0; 4] };
             let (ji, jw) = if has_joints {
                 let src_ji = mesh_data.joint_indices[vi as usize];
                 let src_jw = mesh_data.joint_weights[vi as usize];
@@ -653,6 +664,8 @@ pub fn extract_render_data(
                 texcoord: uv,
                 joint_indices: ji,
                 joint_weights: jw,
+                normal,
+                tangent,
             });
             indices.push(vertex_idx);
             vertex_idx += 1;
@@ -674,7 +687,15 @@ pub fn extract_render_data(
         }
     });
 
-    (vertices, indices, backface_indices, has_vertex_colors, max_dimension, skeleton_data)
+    RenderMesh {
+        vertices,
+        indices,
+        backface_indices,
+        batches,
+        has_vertex_colors,
+        max_dimension,
+        skeleton_data,
+    }
 }
 
 pub fn view_mesh_with_bvh(
@@ -775,18 +796,28 @@ pub fn view_mesh_with_bvh(
     };
 
     // Extract rendering data
-    let (vertices, indices, backface_indices, has_vertex_colors, max_dimension, skeleton_data) =
-        extract_render_data(&mesh_data, no_center);
+    let render_mesh = extract_render_data(&mesh_data, no_center);
+    let materials = std::mem::take(&mut mesh_data.materials);
 
     println!(
-        "Extracted {} vertices ({} triangles) as triangle soup{}",
-        vertices.len(),
-        indices.len() / 3,
-        if has_vertex_colors { " with material colors" } else { "" },
+        "Extracted {} vertices ({} triangles) as triangle soup{}{}",
+        render_mesh.vertices.len(),
+        render_mesh.indices.len() / 3,
+        if render_mesh.has_vertex_colors { " with material colors" } else { "" },
+        if materials.materials.is_empty() {
+            String::new()
+        } else {
+            let names: Vec<&str> = materials
+                .materials
+                .iter()
+                .map(|m| m.name.as_deref().unwrap_or("<unnamed>"))
+                .collect();
+            format!(", {} material(s): {}", names.len(), names.join(", "))
+        },
     );
 
     // Create viewer state
-    let mut state = ViewerState::for_mesh(max_dimension, stats);
+    let mut state = ViewerState::for_mesh(render_mesh.max_dimension, stats);
     configure_state(&mut state);
 
     // Create animation state if skeleton and animations are present
@@ -845,16 +876,10 @@ pub fn view_mesh_with_bvh(
 
     // Create application
     let vsync = !no_vsync;
-    let texture = mesh_data.texture;
     let mut app = ViewerApp::new(
         state,
-        vertices,
-        indices,
-        backface_indices,
-        has_vertex_colors,
-        texture,
-        skeleton_data,
-        max_dimension,
+        render_mesh,
+        materials,
         vsync,
         animation,
         model_scale.unwrap_or(1.0),
@@ -870,4 +895,55 @@ pub fn view_mesh_with_bvh(
     event_loop.run_app(&mut app)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mesh::loader::test_fixtures::two_material_glb;
+
+    #[test]
+    fn test_extract_render_data_batches_by_material() {
+        let path = two_material_glb("msh_test_render_batches");
+        let mesh_data = load_mesh_with_colors(&path, None).unwrap();
+        std::fs::remove_file(&path).ok();
+
+        let render_mesh = extract_render_data(&mesh_data, false);
+        assert_eq!(
+            render_mesh.batches,
+            vec![
+                DrawBatch { first_index: 0, index_count: 3, material: Some(0) },
+                DrawBatch { first_index: 3, index_count: 3, material: Some(1) },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_extract_render_data_groups_interleaved_materials() {
+        // Faces alternate materials A, B, A, none: each material becomes one contiguous batch
+        let mesh_data = crate::mesh::loader::MeshWithColors {
+            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            face_indices: vec![[0, 1, 2]; 4],
+            face_colors: Vec::new(),
+            texcoords: Vec::new(),
+            normals: Vec::new(),
+            tangents: Vec::new(),
+            materials: MeshMaterials::default(),
+            face_materials: vec![1, 0, 1, NO_MATERIAL],
+            skeleton: None,
+            joint_indices: Vec::new(),
+            joint_weights: Vec::new(),
+            animations: Vec::new(),
+        };
+        let render_mesh = extract_render_data(&mesh_data, false);
+        assert_eq!(
+            render_mesh.batches,
+            vec![
+                DrawBatch { first_index: 0, index_count: 3, material: Some(0) },
+                DrawBatch { first_index: 3, index_count: 6, material: Some(1) },
+                DrawBatch { first_index: 9, index_count: 3, material: None },
+            ]
+        );
+        assert_eq!(render_mesh.indices.len(), 12);
+    }
 }

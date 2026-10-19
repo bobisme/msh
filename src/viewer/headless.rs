@@ -46,8 +46,8 @@ pub fn render_to_file(
     };
 
     // Extract render data
-    let (vertices, indices, backface_indices, has_vertex_colors, max_dimension, skeleton_data) =
-        extract_render_data(&mesh_data, no_center);
+    let render_mesh = extract_render_data(&mesh_data, no_center);
+    let max_dimension = render_mesh.max_dimension;
 
     // Configure state
     let mut state = ViewerState::for_mesh(max_dimension, stats);
@@ -69,11 +69,11 @@ pub fn render_to_file(
     };
 
     // Create mesh renderer and load mesh
-    let mut mesh_renderer = MeshRenderer::new(&device, &config);
-    mesh_renderer.load_mesh(&device, &queue, &vertices, &indices, &backface_indices, has_vertex_colors, mesh_data.texture.as_ref());
+    let mut mesh_renderer = MeshRenderer::new(&device, &queue, &config);
+    mesh_renderer.load_mesh(&device, &queue, &render_mesh, &mesh_data.materials);
 
     // Set up joint palette if skeleton is present
-    if let Some(ref skel_data) = skeleton_data {
+    if let Some(ref skel_data) = render_mesh.skeleton_data {
         mesh_renderer.update_joint_palette(&queue, &skel_data.joint_matrices);
         mesh_renderer.set_joint_count(skel_data.joint_matrices.len() as u32);
     }
@@ -117,6 +117,7 @@ pub fn render_to_file(
         state.shading.as_u32(),
         state.base_color,
         state.light_direction,
+        state.background,
     );
 
     // Create offscreen render target
@@ -146,7 +147,6 @@ pub fn render_to_file(
         &render_view,
         state.show_wireframe,
         state.show_backfaces,
-        state.clear_color,
     );
 
     // Read back texture to buffer

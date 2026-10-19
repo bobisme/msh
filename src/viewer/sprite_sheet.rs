@@ -121,13 +121,13 @@ fn render_all_tiles(
     };
 
     // Extract render data
-    let (vertices, indices, backface_indices, has_vertex_colors, max_dimension, skeleton_data) =
-        extract_render_data(&mesh_data, false);
+    let render_mesh = extract_render_data(&mesh_data, false);
+    let max_dimension = render_mesh.max_dimension;
 
     // Configure state
     let mut state = ViewerState::for_mesh(max_dimension, stats);
     if config.transparent_bg {
-        state.clear_color = [0.0, 0.0, 0.0, 0.0];
+        state.background = super::state::Background::Solid([0.0, 0.0, 0.0, 0.0]);
     }
     configure_state(&mut state);
 
@@ -148,19 +148,11 @@ fn render_all_tiles(
     };
 
     // Create mesh renderer and load mesh data
-    let mut mesh_renderer = MeshRenderer::new(&device, &surface_config);
-    mesh_renderer.load_mesh(
-        &device,
-        &queue,
-        &vertices,
-        &indices,
-        &backface_indices,
-        has_vertex_colors,
-        mesh_data.texture.as_ref(),
-    );
+    let mut mesh_renderer = MeshRenderer::new(&device, &queue, &surface_config);
+    mesh_renderer.load_mesh(&device, &queue, &render_mesh, &mesh_data.materials);
 
     // Set up initial joint palette if skeleton is present
-    if let Some(ref skel_data) = skeleton_data {
+    if let Some(ref skel_data) = render_mesh.skeleton_data {
         mesh_renderer.update_joint_palette(&queue, &skel_data.joint_matrices);
         mesh_renderer.set_joint_count(skel_data.joint_matrices.len() as u32);
     }
@@ -245,6 +237,7 @@ fn render_all_tiles(
                 state.shading.as_u32(),
                 state.base_color,
                 state.light_direction,
+                state.background,
             );
 
             // Render
@@ -258,7 +251,6 @@ fn render_all_tiles(
                 &render_view,
                 state.show_wireframe,
                 state.show_backfaces,
-                state.clear_color,
             );
 
             // Copy render target to readback buffer

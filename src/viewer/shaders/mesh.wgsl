@@ -8,20 +8,46 @@ struct Uniforms {
     // Shading parameters
     shading_mode: u32,      // 0=Lit, 1=Flat, 2=Unlit
     has_vertex_colors: u32, // 1=use per-vertex color, 0=use uniform base_color
-    has_texture: u32,       // 1=sample baseColorTexture, 0=no texture
+    viewport_aspect: f32,   // width / height
     joint_count: u32,       // number of active joints (0 = no skinning)
     base_color: vec4<f32>,
     light_direction: vec3<f32>,
     _pad4: f32,
+    background_center: vec4<f32>, // linear RGBA at the middle of the frame
+    background_edge: vec4<f32>,   // linear RGBA at the corners
 };
 
 @group(0) @binding(0)
 var<uniform> uniforms: Uniforms;
 
+struct Material {
+    base_color_factor: vec4<f32>,
+    has_base_color_texture: u32,
+    has_normal_texture: u32,
+    has_metallic_roughness_texture: u32,
+    has_occlusion_texture: u32,
+    alpha_mode: u32,       // 0=Opaque, 1=Mask, 2=Blend
+    use_viewer_color: u32, // 1=vertex color / uniforms.base_color instead of base_color_factor
+    alpha_cutoff: f32,
+    metallic_factor: f32,
+    roughness_factor: f32,
+    normal_scale: f32,
+    occlusion_strength: f32,
+    _pad: f32,
+};
+
 @group(1) @binding(0)
-var base_color_texture: texture_2d<f32>;
+var<uniform> material: Material;
 @group(1) @binding(1)
-var base_color_sampler: sampler;
+var base_color_texture: texture_2d<f32>;
+@group(1) @binding(2)
+var normal_texture: texture_2d<f32>;
+@group(1) @binding(3)
+var metallic_roughness_texture: texture_2d<f32>;
+@group(1) @binding(4)
+var occlusion_texture: texture_2d<f32>;
+@group(1) @binding(5)
+var material_sampler: sampler;
 
 struct JointPalette {
     joints: array<mat4x4<f32>, 256>,
@@ -35,6 +61,8 @@ struct VertexInput {
     @location(2) texcoord: vec2<f32>,
     @location(3) joint_indices: vec4<u32>,
     @location(4) joint_weights: vec4<f32>,
+    @location(5) normal: vec3<f32>,
+    @location(6) tangent: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -42,7 +70,13 @@ struct VertexOutput {
     @location(0) world_position: vec3<f32>,
     @location(1) vertex_color: vec4<f32>,
     @location(2) texcoord: vec2<f32>,
+    @location(3) normal: vec3<f32>,
+    @location(4) tangent: vec4<f32>,
 };
+
+fn mat3_of(m: mat4x4<f32>) -> mat3x3<f32> {
+    return mat3x3<f32>(m[0].xyz, m[1].xyz, m[2].xyz);
+}
 
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
@@ -50,18 +84,27 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 
     // Apply GPU skinning when joints are present
     var local_pos: vec4<f32>;
+    var local_normal = in.normal;
+    var local_tangent = in.tangent.xyz;
     if uniforms.joint_count > 0u {
         var skinned_pos = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        var skinned_normal = vec3<f32>(0.0);
+        var skinned_tangent = vec3<f32>(0.0);
         for (var i = 0u; i < 4u; i = i + 1u) {
             let weight = in.joint_weights[i];
             if weight > 0.0 {
                 let joint_mat = joint_palette.joints[in.joint_indices[i]];
                 skinned_pos = skinned_pos + weight * (joint_mat * vec4<f32>(in.position, 1.0));
+                skinned_normal = skinned_normal + weight * (mat3_of(joint_mat) * in.normal);
+                skinned_tangent = skinned_tangent + weight * (mat3_of(joint_mat) * in.tangent.xyz);
             }
         }
         // If no skinning weights applied (all weights zero), use original position
         if skinned_pos.w == 0.0 {
             skinned_pos = vec4<f32>(in.position, 1.0);
+        } else {
+            local_normal = skinned_normal;
+            local_tangent = skinned_tangent;
         }
         local_pos = skinned_pos;
     } else {
@@ -73,59 +116,128 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.clip_position = uniforms.view_proj * world_pos;
     out.vertex_color = in.color;
     out.texcoord = in.texcoord;
+    // Model matrix is rotation * uniform scale, so it transforms normals directly.
+    // Zero normals/tangents stay zero and signal "absent" to the fragment shader.
+    out.normal = mat3_of(uniforms.model) * local_normal;
+    out.tangent = vec4<f32>(mat3_of(uniforms.model) * local_tangent, in.tangent.w);
     return out;
 }
 
 // Fragment shader
 
 struct FragmentInput {
+    @builtin(front_facing) front_facing: bool,
     @location(0) world_position: vec3<f32>,
     @location(1) vertex_color: vec4<f32>,
     @location(2) texcoord: vec2<f32>,
+    @location(3) normal: vec3<f32>,
+    @location(4) tangent: vec4<f32>,
 };
 
-// Resolve base color: texture > vertex color > uniform
+// Resolve base color: material factor (or vertex color / viewer color) * baseColorTexture
 fn resolve_base_color(vertex_color: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {
-    if uniforms.has_texture == 1u {
-        let tex_color = textureSample(base_color_texture, base_color_sampler, uv);
-        // Multiply texture by vertex color or base_color factor
+    var color = material.base_color_factor;
+    if material.use_viewer_color == 1u {
         if uniforms.has_vertex_colors == 1u {
-            return tex_color * vertex_color;
+            color = vertex_color;
+        } else {
+            color = uniforms.base_color;
         }
-        return tex_color * uniforms.base_color;
     }
-    if uniforms.has_vertex_colors == 1u {
-        return vertex_color;
+    if material.has_base_color_texture == 1u {
+        color = color * textureSample(base_color_texture, material_sampler, uv);
     }
-    return uniforms.base_color;
+    return color;
+}
+
+// Face normal from screen-space derivatives; always faces the camera
+fn face_normal(world_position: vec3<f32>) -> vec3<f32> {
+    return normalize(cross(dpdy(world_position), dpdx(world_position)));
+}
+
+// Shading normal: interpolated vertex normal (+ normal map) when available, else face normal
+fn shading_normal(in: FragmentInput) -> vec3<f32> {
+    if dot(in.normal, in.normal) < 1e-12 {
+        return face_normal(in.world_position);
+    }
+    var n = normalize(in.normal);
+    if material.has_normal_texture == 1u && dot(in.tangent.xyz, in.tangent.xyz) > 1e-12 {
+        let t = normalize(in.tangent.xyz - n * dot(n, in.tangent.xyz));
+        let b = cross(n, t) * in.tangent.w;
+        var tn = textureSample(normal_texture, material_sampler, in.texcoord).xyz * 2.0 - 1.0;
+        tn = vec3<f32>(tn.xy * material.normal_scale, tn.z);
+        n = normalize(t * tn.x + b * tn.y + n * tn.z);
+    }
+    // Back faces are only rasterized for double-sided materials; light them from their own side
+    if !in.front_facing {
+        n = -n;
+    }
+    return n;
+}
+
+// Output alpha: opaque surfaces are fully opaque, masked ones are cut out
+fn resolve_alpha(alpha: f32) -> f32 {
+    if material.alpha_mode == 0u {
+        return 1.0;
+    }
+    if material.alpha_mode == 1u {
+        if alpha < material.alpha_cutoff {
+            discard;
+        }
+        return 1.0;
+    }
+    return alpha;
 }
 
 @fragment
 fn fs_main(in: FragmentInput) -> @location(0) vec4<f32> {
     let color = resolve_base_color(in.vertex_color, in.texcoord);
+    let alpha = resolve_alpha(color.a);
     let base = color.rgb;
 
     // Unlit: just output base color
     if uniforms.shading_mode == 2u {
-        return vec4<f32>(base, color.a);
+        return vec4<f32>(base, alpha);
     }
-
-    // Calculate normal from derivatives (per-pixel)
-    let dpdx = dpdx(in.world_position);
-    let dpdy = dpdy(in.world_position);
-    let normal = normalize(cross(dpdy, dpdx));
 
     let light_dir = normalize(uniforms.light_direction);
 
     // Flat: single directional light, no specular
     if uniforms.shading_mode == 1u {
+        let normal = face_normal(in.world_position);
         let diffuse = max(dot(normal, light_dir), 0.0);
         let ambient = 0.15;
         let lighting = ambient + diffuse * 0.85;
-        return vec4<f32>(base * lighting, color.a);
+        return vec4<f32>(base * lighting, alpha);
     }
 
-    // Lit: two lights + specular (original behavior)
+    // Lit: hemisphere ambient + key/fill lights + specular, driven by metallic-roughness/occlusion
+    let normal = shading_normal(in);
+
+    var metallic = material.metallic_factor;
+    var roughness = material.roughness_factor;
+    if material.has_metallic_roughness_texture == 1u {
+        let mr = textureSample(metallic_roughness_texture, material_sampler, in.texcoord);
+        roughness = roughness * mr.g;
+        metallic = metallic * mr.b;
+    }
+    var occlusion = 1.0;
+    if material.has_occlusion_texture == 1u {
+        let ao = textureSample(occlusion_texture, material_sampler, in.texcoord).r;
+        occlusion = 1.0 + material.occlusion_strength * (ao - 1.0);
+    }
+
+    let diffuse_color = base * (1.0 - metallic);
+    let specular_color = mix(vec3<f32>(0.04), base, metallic);
+
+    // Sky/ground fill so surfaces facing away from the lights stay readable.
+    // Metals have little diffuse, so they get the fill through their specular color instead
+    // (a stand-in for environment reflections).
+    let sky = vec3<f32>(0.38, 0.40, 0.44);
+    let ground = vec3<f32>(0.16, 0.15, 0.14);
+    let hemi = mix(ground, sky, normal.y * 0.5 + 0.5);
+    let ambient = hemi * occlusion * (diffuse_color + specular_color * metallic);
+
     let light2_dir = normalize(vec3<f32>(-0.3, -0.5, 0.3));
     let view_dir = normalize(uniforms.camera_pos - in.world_position);
 
@@ -133,13 +245,16 @@ fn fs_main(in: FragmentInput) -> @location(0) vec4<f32> {
     let diffuse2 = max(dot(normal, light2_dir), 0.0);
 
     let half_dir = normalize(light_dir + view_dir);
-    let specular = pow(max(dot(normal, half_dir), 0.0), 32.0);
+    let shininess = mix(96.0, 4.0, roughness);
+    let specular_strength = mix(1.0, 0.1, roughness);
+    let specular = pow(max(dot(normal, half_dir), 0.0), shininess) * specular_strength * diffuse1;
+    // Non-metals keep a visible (if dim) highlight rather than the physically tiny 4%
+    let highlight = mix(vec3<f32>(0.25), specular_color, metallic);
 
-    let ambient = 0.15;
-    let lighting = ambient + diffuse1 * 0.7 + diffuse2 * 0.3 + specular * 0.5;
-
-    let lit_color = base * lighting;
-    return vec4<f32>(lit_color, color.a);
+    let lit_color = ambient
+        + diffuse_color * (diffuse1 * 0.75 + diffuse2 * 0.25)
+        + highlight * specular;
+    return vec4<f32>(lit_color, alpha);
 }
 
 // Fragment shader for wireframe (black lines)
@@ -153,9 +268,7 @@ fn fs_wireframe(in: FragmentInput) -> @location(0) vec4<f32> {
 fn fs_backface(in: FragmentInput) -> @location(0) vec4<f32> {
     let base = vec3<f32>(1.0, 0.0, 0.0);
 
-    let dpdx = dpdx(in.world_position);
-    let dpdy = dpdy(in.world_position);
-    let normal = normalize(cross(dpdy, dpdx));
+    let normal = face_normal(in.world_position);
 
     let light_dir = normalize(uniforms.light_direction);
     let light2_dir = normalize(vec3<f32>(-0.3, -0.5, 0.3));
@@ -172,4 +285,47 @@ fn fs_backface(in: FragmentInput) -> @location(0) vec4<f32> {
 
     let color = base * lighting;
     return vec4<f32>(color, 1.0);
+}
+
+// Background: fullscreen radial gradient
+
+struct BackgroundOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) ndc: vec2<f32>,
+};
+
+@vertex
+fn vs_background(@builtin(vertex_index) index: u32) -> BackgroundOutput {
+    // One triangle covering the screen: (-1,-1), (3,-1), (-1,3)
+    let xy = vec2<f32>(f32((index << 1u) & 2u), f32(index & 2u)) * 2.0 - 1.0;
+    var out: BackgroundOutput;
+    out.clip_position = vec4<f32>(xy, 0.0, 1.0);
+    out.ndc = xy;
+    return out;
+}
+
+fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
+    return select(1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055, c * 12.92, c <= vec3<f32>(0.0031308));
+}
+
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    return select(pow((c + 0.055) / 1.055, vec3<f32>(2.4)), c / 12.92, c <= vec3<f32>(0.04045));
+}
+
+@fragment
+fn fs_background(in: BackgroundOutput) -> @location(0) vec4<f32> {
+    // Distance from center with square pixels, normalized so the corners are 1
+    let p = vec2<f32>(in.ndc.x * uniforms.viewport_aspect, in.ndc.y);
+    let corner = length(vec2<f32>(uniforms.viewport_aspect, 1.0));
+    // Stays black through the middle half, then ramps to the edge color at the corners
+    let t = smoothstep(0.5, 1.0, length(p) / corner);
+
+    // Interpolate in sRGB so the falloff looks even, and dither by +-0.5 of an 8-bit step
+    // so the dark ramp doesn't band
+    let center = linear_to_srgb(uniforms.background_center.rgb);
+    let edge = linear_to_srgb(uniforms.background_edge.rgb);
+    let noise = fract(52.9829189 * fract(dot(in.clip_position.xy, vec2<f32>(0.06711056, 0.00583715)))) - 0.5;
+    let srgb = clamp(mix(center, edge, t) + noise / 255.0, vec3<f32>(0.0), vec3<f32>(1.0));
+    let alpha = mix(uniforms.background_center.a, uniforms.background_edge.a, t);
+    return vec4<f32>(srgb_to_linear(srgb), alpha);
 }

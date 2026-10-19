@@ -13,6 +13,63 @@ pub struct TextureData {
     pub height: u32,
 }
 
+/// glTF alpha mode
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum AlphaMode {
+    #[default]
+    Opaque,
+    Mask,
+    Blend,
+}
+
+/// A glTF metallic-roughness material. Texture fields index into `MeshMaterials::textures`.
+#[derive(Clone, Debug)]
+pub struct MaterialData {
+    pub name: Option<String>,
+    pub base_color_factor: [f32; 4],
+    pub base_color_texture: Option<usize>,
+    pub metallic_factor: f32,
+    pub roughness_factor: f32,
+    /// Roughness in G, metalness in B
+    pub metallic_roughness_texture: Option<usize>,
+    pub normal_texture: Option<usize>,
+    pub normal_scale: f32,
+    /// Occlusion in R (often the same image as metallic_roughness_texture, i.e. ORM)
+    pub occlusion_texture: Option<usize>,
+    pub occlusion_strength: f32,
+    pub alpha_mode: AlphaMode,
+    pub alpha_cutoff: f32,
+    pub double_sided: bool,
+}
+
+impl Default for MaterialData {
+    /// glTF spec defaults
+    fn default() -> Self {
+        Self {
+            name: None,
+            base_color_factor: [1.0; 4],
+            base_color_texture: None,
+            metallic_factor: 1.0,
+            roughness_factor: 1.0,
+            metallic_roughness_texture: None,
+            normal_texture: None,
+            normal_scale: 1.0,
+            occlusion_texture: None,
+            occlusion_strength: 1.0,
+            alpha_mode: AlphaMode::Opaque,
+            alpha_cutoff: 0.5,
+            double_sided: false,
+        }
+    }
+}
+
+/// Materials and the textures they reference
+#[derive(Default)]
+pub struct MeshMaterials {
+    pub materials: Vec<MaterialData>,
+    pub textures: Vec<TextureData>,
+}
+
 /// Mesh geometry with optional per-face material colors and textures
 pub struct MeshWithColors {
     /// Vertex positions
@@ -23,8 +80,15 @@ pub struct MeshWithColors {
     pub face_colors: Vec<[f32; 4]>,
     /// Per-vertex UV coordinates (empty if no UVs)
     pub texcoords: Vec<[f32; 2]>,
-    /// Embedded texture (first baseColorTexture found, if any)
-    pub texture: Option<TextureData>,
+    /// Per-vertex normals (empty if none; zero for vertices of primitives without normals)
+    pub normals: Vec<[f32; 3]>,
+    /// Per-vertex tangents, w = bitangent sign (empty if none; zero where missing)
+    pub tangents: Vec<[f32; 4]>,
+    /// glTF materials used by this mesh
+    pub materials: MeshMaterials,
+    /// Per-face index into `materials.materials` (empty if the mesh has no glTF materials;
+    /// `NO_MATERIAL` for faces of primitives without a material)
+    pub face_materials: Vec<u32>,
     /// Skeleton extracted from glTF skin data (None if no skin)
     pub skeleton: Option<Skeleton>,
     /// Per-vertex joint indices for skeletal animation (empty if no skin data).
@@ -36,6 +100,9 @@ pub struct MeshWithColors {
     pub animations: Vec<AnimationClip>,
 }
 
+/// `face_materials` value for faces that use the viewer's default material
+pub const NO_MATERIAL: u32 = u32::MAX;
+
 impl MeshWithColors {
     /// Convert Z-up coordinates to Y-up by swapping Y and Z
     pub fn convert_z_up_to_y_up(&mut self) {
@@ -43,6 +110,16 @@ impl MeshWithColors {
             let y = pos[1];
             pos[1] = pos[2];
             pos[2] = -y;
+        }
+        for n in &mut self.normals {
+            let y = n[1];
+            n[1] = n[2];
+            n[2] = -y;
+        }
+        for t in &mut self.tangents {
+            let y = t[1];
+            t[1] = t[2];
+            t[2] = -y;
         }
     }
 
@@ -186,7 +263,10 @@ fn parse_obj_with_colors(path: &PathBuf) -> Result<MeshWithColors, Box<dyn std::
         face_indices,
         face_colors,
         texcoords: Vec::new(),
-        texture: None,
+        normals: Vec::new(),
+        tangents: Vec::new(),
+        materials: MeshMaterials::default(),
+        face_materials: Vec::new(),
         skeleton: None,
         joint_indices: Vec::new(),
         joint_weights: Vec::new(),
@@ -289,12 +369,18 @@ fn load_glb_with_colors(
 
     let mut positions: Vec<[f32; 3]> = Vec::new();
     let mut texcoords: Vec<[f32; 2]> = Vec::new();
+    let mut normals: Vec<[f32; 3]> = Vec::new();
+    let mut tangents: Vec<[f32; 4]> = Vec::new();
     let mut face_indices: Vec<[u32; 3]> = Vec::new();
-    let mut face_colors: Vec<[f32; 4]> = Vec::new();
+    let mut face_materials: Vec<u32> = Vec::new();
     let mut vertex_offset = 0u32;
-    let mut first_color: Option<[f32; 4]> = None;
-    let mut has_materials = false;
-    let mut texture_image_index: Option<usize> = None;
+    let mut has_normals = false;
+    let mut has_tangents = false;
+
+    // Only the materials (and their images) used by the selected mesh are loaded
+    let mut materials = MeshMaterials::default();
+    let mut material_map: HashMap<usize, u32> = HashMap::new();
+    let mut texture_map: HashMap<usize, usize> = HashMap::new();
 
     for primitive in selected_mesh.primitives() {
         let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
@@ -315,23 +401,29 @@ fn load_glb_with_colors(
             texcoords.extend(std::iter::repeat_n([0.0f32; 2], vert_count));
         }
 
-        // Get material color for this primitive
-        let material = primitive.material();
-        let pbr = material.pbr_metallic_roughness();
-        let base_color_factor = pbr.base_color_factor(); // [f32; 4]
-
-        // Detect meaningful material variation (distinct colors across primitives)
-        match first_color {
-            None => first_color = Some(base_color_factor),
-            Some(first) if first != base_color_factor => has_materials = true,
-            _ => {}
+        if let Some(prim_normals) = reader.read_normals() {
+            has_normals = true;
+            normals.extend(prim_normals);
+        } else {
+            normals.extend(std::iter::repeat_n([0.0f32; 3], vert_count));
         }
 
-        // Track first baseColorTexture
-        if texture_image_index.is_none()
-            && let Some(tex_info) = pbr.base_color_texture() {
-                texture_image_index = Some(tex_info.texture().source().index());
-            }
+        if let Some(prim_tangents) = reader.read_tangents() {
+            has_tangents = true;
+            tangents.extend(prim_tangents);
+        } else {
+            tangents.extend(std::iter::repeat_n([0.0f32; 4], vert_count));
+        }
+
+        let material = primitive.material();
+        let material_idx = match material.index() {
+            None => NO_MATERIAL,
+            Some(gltf_idx) => *material_map.entry(gltf_idx).or_insert_with(|| {
+                let data = convert_material(&material, &images, &mut materials.textures, &mut texture_map);
+                materials.materials.push(data);
+                (materials.materials.len() - 1) as u32
+            }),
+        };
 
         // Get indices and build face list
         let idx_list: Vec<u32> = if let Some(indices) = reader.read_indices() {
@@ -348,15 +440,11 @@ fn load_glb_with_colors(
                     chunk[1] + vertex_offset,
                     chunk[2] + vertex_offset,
                 ]);
-                face_colors.push(base_color_factor);
+                face_materials.push(material_idx);
             }
         }
 
         vertex_offset += pos_vec.len() as u32;
-    }
-
-    if !has_materials {
-        face_colors.clear();
     }
 
     // If no UVs were found at all, clear the texcoords vec
@@ -364,33 +452,15 @@ fn load_glb_with_colors(
     if !has_uvs {
         texcoords.clear();
     }
-
-    // Load texture image data
-    let texture = texture_image_index.and_then(|idx| {
-        images.get(idx).map(|img| {
-            let rgba_pixels = match img.format {
-                gltf::image::Format::R8G8B8A8 => img.pixels.clone(),
-                gltf::image::Format::R8G8B8 => {
-                    // Convert RGB to RGBA
-                    let mut rgba = Vec::with_capacity(img.pixels.len() / 3 * 4);
-                    for chunk in img.pixels.chunks(3) {
-                        rgba.extend_from_slice(chunk);
-                        rgba.push(255);
-                    }
-                    rgba
-                }
-                _ => {
-                    eprintln!("Warning: unsupported texture format {:?}, skipping", img.format);
-                    return TextureData { pixels: Vec::new(), width: 0, height: 0 };
-                }
-            };
-            TextureData {
-                pixels: rgba_pixels,
-                width: img.width,
-                height: img.height,
-            }
-        })
-    }).filter(|t| !t.pixels.is_empty());
+    if !has_normals {
+        normals.clear();
+    }
+    if !has_tangents {
+        tangents.clear();
+    }
+    if materials.materials.is_empty() {
+        face_materials.clear();
+    }
 
     // --- Skin data extraction ---
     // Find the node that binds the selected mesh to a skin
@@ -438,13 +508,83 @@ fn load_glb_with_colors(
     Ok(MeshWithColors {
         positions,
         face_indices,
-        face_colors,
+        face_colors: Vec::new(),
         texcoords,
-        texture,
+        normals,
+        tangents,
+        materials,
+        face_materials,
         skeleton,
         joint_indices,
         joint_weights,
         animations,
+    })
+}
+
+/// Convert a glTF material, decoding any images it references into `textures`
+/// (deduplicated by glTF image index via `texture_map`).
+fn convert_material(
+    material: &gltf::Material<'_>,
+    images: &[gltf::image::Data],
+    textures: &mut Vec<TextureData>,
+    texture_map: &mut HashMap<usize, usize>,
+) -> MaterialData {
+    let mut load = |texture: gltf::Texture<'_>| -> Option<usize> {
+        let image_idx = texture.source().index();
+        if let Some(&idx) = texture_map.get(&image_idx) {
+            return Some(idx);
+        }
+        let data = convert_image(images.get(image_idx)?)?;
+        textures.push(data);
+        texture_map.insert(image_idx, textures.len() - 1);
+        Some(textures.len() - 1)
+    };
+
+    let pbr = material.pbr_metallic_roughness();
+    let normal = material.normal_texture();
+    let occlusion = material.occlusion_texture();
+    MaterialData {
+        name: material.name().map(String::from),
+        base_color_factor: pbr.base_color_factor(),
+        base_color_texture: pbr.base_color_texture().and_then(|t| load(t.texture())),
+        metallic_factor: pbr.metallic_factor(),
+        roughness_factor: pbr.roughness_factor(),
+        metallic_roughness_texture: pbr.metallic_roughness_texture().and_then(|t| load(t.texture())),
+        normal_scale: normal.as_ref().map_or(1.0, |n| n.scale()),
+        normal_texture: normal.and_then(|n| load(n.texture())),
+        occlusion_strength: occlusion.as_ref().map_or(1.0, |o| o.strength()),
+        occlusion_texture: occlusion.and_then(|o| load(o.texture())),
+        alpha_mode: match material.alpha_mode() {
+            gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
+            gltf::material::AlphaMode::Mask => AlphaMode::Mask,
+            gltf::material::AlphaMode::Blend => AlphaMode::Blend,
+        },
+        alpha_cutoff: material.alpha_cutoff().unwrap_or(0.5),
+        double_sided: material.double_sided(),
+    }
+}
+
+/// Convert decoded glTF image data to RGBA8
+fn convert_image(img: &gltf::image::Data) -> Option<TextureData> {
+    use gltf::image::Format;
+    let pixels = match img.format {
+        Format::R8G8B8A8 => img.pixels.clone(),
+        Format::R8G8B8 => img
+            .pixels
+            .chunks(3)
+            .flat_map(|c| [c[0], c[1], c[2], 255])
+            .collect(),
+        Format::R8G8 => img.pixels.chunks(2).flat_map(|c| [c[0], c[1], 0, 255]).collect(),
+        Format::R8 => img.pixels.iter().flat_map(|&v| [v, v, v, 255]).collect(),
+        _ => {
+            eprintln!("Warning: unsupported texture format {:?}, skipping", img.format);
+            return None;
+        }
+    };
+    Some(TextureData {
+        pixels,
+        width: img.width,
+        height: img.height,
     })
 }
 
@@ -739,7 +879,10 @@ fn load_3mf_with_colors(path: &PathBuf) -> Result<MeshWithColors, Box<dyn std::e
         face_indices,
         face_colors,
         texcoords: Vec::new(),
-        texture: None,
+        normals: Vec::new(),
+        tangents: Vec::new(),
+        materials: MeshMaterials::default(),
+        face_materials: Vec::new(),
         skeleton: None,
         joint_indices: Vec::new(),
         joint_weights: Vec::new(),
@@ -764,4 +907,177 @@ pub fn load_mesh_from_glb(
 ) -> Result<CornerTableF, Box<dyn std::error::Error>> {
     let mesh_data = load_glb_with_colors(path, mesh_name)?;
     mesh_data.to_corner_table()
+}
+
+#[cfg(test)]
+pub(crate) mod test_fixtures {
+    use std::path::PathBuf;
+
+    fn png_1x1(rgba: [u8; 4]) -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(1, 1, image::Rgba(rgba));
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    }
+
+    /// Write a GLB with one mesh of two primitives (one triangle each):
+    /// 0 = "hull": OPAQUE, single-sided, red 1x1 baseColorTexture
+    /// 1 = "sail": BLEND, double-sided, blue 1x1 baseColorTexture, baseColorFactor alpha 0.5
+    pub(crate) fn two_material_glb(name: &str) -> PathBuf {
+        let tri = |x: f32| -> Vec<u8> {
+            [[x, 0.0, 0.0], [x + 1.0, 0.0, 0.0], [x, 1.0, 0.0]]
+                .iter()
+                .flatten()
+                .flat_map(|v: &f32| v.to_le_bytes())
+                .collect()
+        };
+        let uvs: Vec<u8> = [[0.0f32, 0.0], [1.0, 0.0], [0.0, 1.0]]
+            .iter()
+            .flatten()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        let red = png_1x1([255, 0, 0, 255]);
+        let blue = png_1x1([0, 0, 255, 255]);
+
+        let mut bin = Vec::new();
+        let mut views = Vec::new();
+        for chunk in [tri(0.0), tri(2.0), uvs.clone(), uvs, red, blue] {
+            views.push(serde_json::json!({
+                "buffer": 0, "byteOffset": bin.len(), "byteLength": chunk.len()
+            }));
+            bin.extend_from_slice(&chunk);
+            while bin.len() % 4 != 0 {
+                bin.push(0);
+            }
+        }
+
+        let pos_accessor = |view: usize, x: f32| {
+            serde_json::json!({
+                "bufferView": view, "componentType": 5126, "count": 3, "type": "VEC3",
+                "min": [x, 0.0, 0.0], "max": [x + 1.0, 1.0, 0.0]
+            })
+        };
+        let json = serde_json::json!({
+            "asset": { "version": "2.0" },
+            "buffers": [{ "byteLength": bin.len() }],
+            "bufferViews": views,
+            "accessors": [
+                pos_accessor(0, 0.0),
+                pos_accessor(1, 2.0),
+                { "bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC2" },
+                { "bufferView": 3, "componentType": 5126, "count": 3, "type": "VEC2" }
+            ],
+            "images": [
+                { "bufferView": 4, "mimeType": "image/png" },
+                { "bufferView": 5, "mimeType": "image/png" }
+            ],
+            "textures": [{ "source": 0 }, { "source": 1 }],
+            "materials": [
+                {
+                    "name": "hull",
+                    "pbrMetallicRoughness": { "baseColorTexture": { "index": 0 } }
+                },
+                {
+                    "name": "sail",
+                    "alphaMode": "BLEND",
+                    "doubleSided": true,
+                    "pbrMetallicRoughness": {
+                        "baseColorFactor": [1.0, 1.0, 1.0, 0.5],
+                        "baseColorTexture": { "index": 1 }
+                    }
+                }
+            ],
+            "meshes": [{
+                "name": "ship",
+                "primitives": [
+                    { "attributes": { "POSITION": 0, "TEXCOORD_0": 2 }, "material": 0 },
+                    { "attributes": { "POSITION": 1, "TEXCOORD_0": 3 }, "material": 1 }
+                ]
+            }],
+            "nodes": [{ "mesh": 0 }],
+            "scenes": [{ "nodes": [0] }],
+            "scene": 0
+        });
+
+        let mut json_bytes = serde_json::to_vec(&json).unwrap();
+        while json_bytes.len() % 4 != 0 {
+            json_bytes.push(b' ');
+        }
+        let total = 12 + 8 + json_bytes.len() + 8 + bin.len();
+        let mut glb = Vec::with_capacity(total);
+        glb.extend_from_slice(b"glTF");
+        glb.extend_from_slice(&2u32.to_le_bytes());
+        glb.extend_from_slice(&(total as u32).to_le_bytes());
+        glb.extend_from_slice(&(json_bytes.len() as u32).to_le_bytes());
+        glb.extend_from_slice(b"JSON");
+        glb.extend_from_slice(&json_bytes);
+        glb.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+        glb.extend_from_slice(b"BIN\0");
+        glb.extend_from_slice(&bin);
+
+        let path = std::env::temp_dir().join(format!("{}_{}.glb", name, std::process::id()));
+        std::fs::write(&path, glb).unwrap();
+        path
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_glb_primitives_keep_their_own_materials() {
+        let path = test_fixtures::two_material_glb("msh_test_loader_materials");
+        let mesh = load_mesh_with_colors(&path, None).unwrap();
+        std::fs::remove_file(&path).ok();
+
+        let mats = &mesh.materials.materials;
+        assert_eq!(mats.len(), 2);
+        assert_eq!(mesh.materials.textures.len(), 2);
+        assert_eq!(mesh.face_materials, vec![0, 1]);
+
+        let hull = &mats[0];
+        assert_eq!(hull.name.as_deref(), Some("hull"));
+        assert_eq!(hull.alpha_mode, AlphaMode::Opaque);
+        assert!(!hull.double_sided);
+
+        let sail = &mats[1];
+        assert_eq!(sail.name.as_deref(), Some("sail"));
+        assert_eq!(sail.alpha_mode, AlphaMode::Blend);
+        assert!(sail.double_sided);
+        assert_eq!(sail.base_color_factor, [1.0, 1.0, 1.0, 0.5]);
+
+        // Each primitive samples its own texture, not the first one in the file
+        let pixel = |m: &MaterialData| {
+            let tex = &mesh.materials.textures[m.base_color_texture.unwrap()];
+            [tex.pixels[0], tex.pixels[1], tex.pixels[2], tex.pixels[3]]
+        };
+        assert_eq!(pixel(hull), [255, 0, 0, 255]);
+        assert_eq!(pixel(sail), [0, 0, 255, 255]);
+
+        // Material colors live in the materials now, not in per-face colors
+        assert!(mesh.face_colors.is_empty());
+    }
+
+    #[test]
+    fn test_z_up_conversion_rotates_normals_and_tangents() {
+        let mut mesh = MeshWithColors {
+            positions: vec![[0.0, 1.0, 2.0]],
+            face_indices: Vec::new(),
+            face_colors: Vec::new(),
+            texcoords: Vec::new(),
+            normals: vec![[0.0, 0.0, 1.0]],
+            tangents: vec![[0.0, 1.0, 0.0, -1.0]],
+            materials: MeshMaterials::default(),
+            face_materials: Vec::new(),
+            skeleton: None,
+            joint_indices: Vec::new(),
+            joint_weights: Vec::new(),
+            animations: Vec::new(),
+        };
+        mesh.convert_z_up_to_y_up();
+        assert_eq!(mesh.positions[0], [0.0, 2.0, -1.0]);
+        assert_eq!(mesh.normals[0], [0.0, 1.0, 0.0]);
+        assert_eq!(mesh.tangents[0], [0.0, 0.0, -1.0, -1.0]);
+    }
 }
