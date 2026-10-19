@@ -1066,7 +1066,7 @@ fn main() {
             scale,
             no_center,
         } => {
-            use viewer::state::{ProjectionMode, ShadingMode, RenderPreset, ViewerState};
+            use viewer::state::{Background, ProjectionMode, ShadingMode, RenderPreset, ViewerState};
 
             // Build initial render state from CLI flags
             let build_state = |state: &mut ViewerState| {
@@ -1098,10 +1098,10 @@ fn main() {
                     }
                 }
                 if transparent_bg {
-                    state.clear_color = [0.0, 0.0, 0.0, 0.0];
+                    state.background = Background::Solid([0.0, 0.0, 0.0, 0.0]);
                 }
                 if let Some((r, g, b, a)) = clear_color {
-                    state.clear_color = [r, g, b, a];
+                    state.background = Background::Solid([r, g, b, a]);
                 }
                 if let Some(ref mode) = shading {
                     state.shading = match mode.as_str() {
@@ -1188,7 +1188,7 @@ fn main() {
             scale,
             no_center,
         } => {
-            use viewer::state::{ProjectionMode, ShadingMode, RenderPreset, ViewerState};
+            use viewer::state::{Background, ProjectionMode, ShadingMode, RenderPreset, ViewerState};
             use mesh::animation::frame_to_time;
             use mesh::loader::load_mesh_with_colors;
 
@@ -1219,10 +1219,10 @@ fn main() {
                     }
                 }
                 if transparent_bg {
-                    state.clear_color = [0.0, 0.0, 0.0, 0.0];
+                    state.background = Background::Solid([0.0, 0.0, 0.0, 0.0]);
                 }
                 if let Some((r, g, b, a)) = clear_color {
-                    state.clear_color = [r, g, b, a];
+                    state.background = Background::Solid([r, g, b, a]);
                 }
                 if let Some(ref mode) = shading {
                     state.shading = match mode.as_str() {
