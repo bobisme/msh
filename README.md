@@ -1,191 +1,223 @@
-# msh - 3D Mesh CLI Tool
+# msh — 3D mesh tools
 
-A command-line tool for 3D mesh analysis, repair, and visualization. Supports
-`.obj` and `.glb` file formats.
+`msh` is a command-line tool for inspecting, rendering, analyzing, and processing
+3D meshes. It includes an interactive viewer and a windowless renderer for
+repeatable captures and automation.
 
-## Features
+![msh viewing a textured garment with mesh statistics](screenshot.webp)
 
-- **Mesh Remeshing**: Fix and incrementally remesh your 3D models with multiple
-  algorithms
-- **3D Viewer**: Interactive viewer for inspecting meshes
-- **Mesh Analysis**: Get detailed statistics about your mesh
-- **Manifold Checking**: Verify if your mesh is watertight
-- **Automatic Repair**: Fix holes and issues in damaged meshes
+## What it does
 
-![Mesh Viewer](shot-1.png)
+- View textured meshes, glTF materials and skeletal animations, or view BVH motion directly.
+- Render PNGs and sprite sheets with configurable cameras, lighting and backgrounds.
+- Inspect topology, including raw and position-welded boundaries and manifoldness.
+- Repair, remesh, simplify and prepare meshes for game LODs.
+- Control a viewer or a persistent offscreen renderer over local JSON-RPC.
+
+Mesh input formats are OBJ, GLB, glTF and 3MF. Mesh processing writes OBJ or
+GLB, selected by output extension; rendering writes PNG. BVH is supported by
+the standalone motion viewer and as an animation overlay on compatible skins.
+Mesh processing can change geometry and does not preserve every source material
+or attribute; inspect the output for your intended use.
 
 ## Installation
 
+Install the `msh` executable from crates.io with Rust and Cargo:
+
 ```bash
-cargo install mshmash
+cargo install mshmash --locked
 ```
 
-Full features:
+Remote control is enabled by default. To add RenderDoc support, install with
+`cargo install mshmash --locked --features renderdoc`. To build the current
+checkout instead, run `cargo install --locked --path .`.
+
+## Quick start
 
 ```bash
-cargo install mshmash --features remote,renderdoc
-```
-
-## Usage
-
-### View a Mesh
-
-Interactively view a mesh file in a 3D viewer:
-
-```bash
-msh view <INPUT>
-msh view model.obj
-msh view scene.glb --mesh name  # For GLB files with multiple meshes
-```
-
-**Options:**
-
-- `-m, --mesh <MESH>`: Mesh name (required if GLB contains multiple meshes)
-
-### Remesh a Mesh
-
-Remesh a file with automatic fixing and incremental remeshing:
-
-```bash
-msh remesh <INPUT> --out <OUTPUT>
-msh remesh model.obj --out fixed.obj
-msh remesh scene.glb --out output.obj --mesh meshname
-```
-
-**Options:**
-
-- `-o, --out <OUT>`: Output mesh file (.obj) - **required**
-- `-m, --mesh <MESH>`: Mesh name (required if GLB contains multiple meshes)
-- `-i, --iterations <ITERATIONS>`: Number of incremental remeshing iterations
-  (default: 10)
-- `-t, --target-edge-length <TARGET_EDGE_LENGTH>`: Target edge length for
-  incremental remeshing (default: 0.01)
-- `-v, --voxel-size <VOXEL_SIZE>`: Voxel size for fix step (default: 0.01)
-- `--tolerance <TOLERANCE>`: Vertex merge tolerance for fix step (default:
-  0.0001)
-- `--no-fix`: Skip the fix step (just do incremental remesh)
-
-**Remeshing Methods:**
-
-- **Incremental** (default): Edge-based operations that progressively improve
-  mesh quality
-
-  ```bash
-  msh remesh model.obj --out output.obj incremental
-  ```
-
-- **Voxel**: Converts mesh to signed distance field (SDF) then remeshes for
-  clean topology
-
-  ```bash
-  msh remesh model.obj --out output.obj voxel
-  ```
-
-### Get Mesh Statistics
-
-Display detailed information about a mesh:
-
-```bash
-msh stats <INPUT>
-msh stats model.obj
-msh stats scene.glb --mesh meshname
-```
-
-**Options:**
-
-- `-m, --mesh <MESH>`: Mesh name (required if GLB contains multiple meshes)
-
-### Check if Mesh is Manifold
-
-Verify if a mesh is manifold (watertight):
-
-```bash
-msh check <INPUT>
-msh check model.obj
-```
-
-**Options:**
-
-- `-m, --mesh <MESH>`: Mesh name (required if GLB contains multiple meshes)
-
-### Fix Mesh Holes
-
-Automatically fix holes and issues in a damaged mesh:
-
-```bash
-msh fix <INPUT> --out <OUTPUT>
-msh fix damaged.obj --out fixed.obj
-```
-
-**Options:**
-
-- `-o, --out <OUT>`: Output mesh file (.obj) - **required**
-- `-m, --mesh <MESH>`: Mesh name (required if GLB contains multiple meshes)
-- `-v, --voxel-size <VOXEL_SIZE>`: Voxel size for remeshing (default: 0.01)
-- `-t, --tolerance <TOLERANCE>`: Merge vertices closer than this distance before
-  fixing (default: 0.0001)
-- `--no-merge`: Skip vertex merging step
-
-### Inspect GLB/glTF Files
-
-Display the structure and contents of a GLB or glTF file:
-
-```bash
-msh inspect-glb <INPUT>
-msh inspect-glb scene.glb
-msh inspect-glb model.glb --json  # Output as JSON
-```
-
-This command shows the scene hierarchy, including:
-
-- Scene structure and node tree
-- Transform data (position, rotation, scale)
-- Mesh information (name, primitive count)
-- Custom properties (extras)
-- Cameras and other components
-
-**Options:**
-
-- `--json`: Output as JSON instead of tree format
-
-## Supported Formats
-
-- **Input:** `.obj`, `.glb`
-- **Output:** `.obj`
-
-## Common Workflows
-
-**Repair a damaged mesh:**
-
-```bash
+msh view model.glb
+msh view scene.glb --mesh all
+msh view motion.bvh
+msh stats model.glb --json
+msh render model.glb --out model.png --width 800 --height 600
 msh fix broken.obj --out repaired.obj
+msh clean model.glb --out lod.glb --ratio 0.5 --preserve-weights
 ```
 
-**High-quality remesh with custom edge length:**
+Run `msh --help` or `msh <command> --help` for all options.
+
+### Interactive viewer
+
+Drag with the left mouse button to orbit, drag with the right button to pan,
+and scroll to zoom. **W** toggles wireframe, **B** highlights backfaces, **G**
+toggles the ground shadow, **U** toggles the overlay, and **Q** or **Escape**
+quits. For a multi-mesh glTF, the viewer starts with the first mesh; **N/P**
+cycle through meshes. Select one with `--mesh name` or load active scene meshes
+and instances together with `--mesh all`.
 
 ```bash
-msh remesh model.obj --out output.obj --target-edge-length 0.005 --iterations 20
+msh view character.glb --animation walk
+msh view character.glb --clips animations.glb --animation walk
+msh view character.glb --bvh motion.bvh
 ```
 
-**Voxel-based remeshing for topology cleanup:**
+The ground shadow follows the mesh and light and is hidden from below. Use
+`--no-ground` to disable it. Transparent backgrounds and the `sprite-bake`
+preset omit it. The viewer supports material textures, alpha modes, normal,
+metallic-roughness and occlusion maps; see the automation notes below for glTF
+and skin limitations.
+
+### Render and animate
 
 ```bash
-msh remesh model.obj --out clean.obj voxel --voxel-size 0.02
+msh render model.glb --out preview.png --width 1024 --height 1024
+msh render character.glb --animation walk --frames 0-15 --angles 8 \
+  --sprite-sheet --transparent-bg --out walk.png
+msh render model.obj --angles 8 --sprite-sheet --width 128 --height 128 \
+  --transparent-bg --out turntable.png
 ```
 
-**Inspect mesh before and after:**
+Use `--camera-pos` and `--camera-target` for a fixed view, `--shading` for lit,
+flat or unlit output, and `--preset sprite-bake` for sprite-oriented settings.
+`--frame` selects one animation frame; `--frames` samples a range.
+
+### Analyze and process
 
 ```bash
-msh view original.obj
-msh remesh original.obj --out fixed.obj
-msh view fixed.obj
+msh stats model.glb --json --weld-tolerance 0.000001
+msh check model.obj
+msh inspect-glb scene.glb --json
+msh remesh model.obj --out remeshed.obj --target-edge-length 0.005
+msh remesh voxel model.obj --out voxel.obj --size 0.02
+msh remesh simplify model.glb --out simplified.glb --ratio 0.5 --preserve-weights
+msh clean model.obj --out lod.obj --ratio 0.5
 ```
+
+`stats` reports raw and position-welded topology separately. A manifold surface
+may have boundaries; use `is_closed` when a closed surface is required. Neither
+result proves the absence of self-intersections. `fix`, `remesh`, and `clean`
+modify geometry; retain the source and inspect the result. `--preserve-weights`
+transfers weights by nearest vertex where supported.
 
 ## Remote Control & RenderDoc Features
 
 ### Remote Control (Feature: `remote`)
 
 Control the mesh viewer remotely via JSON-RPC. Perfect for automated workflows, scripting, or external tool integration.
+
+#### Agent automation
+
+Use a persistent windowless renderer for repeatable captures:
+
+```bash
+msh serve --port 9002 --size 800x600 --no-ground --shading flat
+msh remote --port 9002 load garment.glb --clips clips.glb
+msh remote --port 9002 set-animation walk
+msh remote --port 9002 set-time 0.25
+msh remote --port 9002 camera --eye=0,0.2,3 --target=0,0,0
+msh remote --port 9002 screenshot shots/front.png
+msh remote --port 9002 backface-stats
+```
+
+`serve` creates no desktop window and captures exactly the requested dimensions.
+For a visible viewer, use `msh view --remote --port 9003 --title "Garment inspection"
+--size 800x600`. A native window's initial size is a compositor hint; screenshot
+acknowledgments report its actual size. `--no-vsync` selects a supported mode.
+
+The default port remains 9001. Use `--port 0` on `view --remote` or `serve` for an
+independent free port; the process prints `RPC_READY http://127.0.0.1:<actual-port>`
+only after binding. Pass that port to every `msh remote --port N ...` command.
+Bind errors cause startup to fail. Multiple agents can use separate endpoints.
+
+RPC `load_model(path, mesh_name?, keep_camera?, clips?)` now waits for a successful
+GPU upload and returns mesh statistics, including `triangles` and detailed
+`topology`. `msh remote load --keep-camera` preserves the current camera. Failed
+loads keep the previous valid scene. `screenshot(path)` waits until the PNG is
+written and returns `{path, width, height}`; failures are RPC errors. Both CLI
+commands print the returned JSON. Older clients expecting a string must update.
+No stdout acknowledgment parsing or file-existence polling is needed.
+
+Camera/state commands and captures run in order. A capture finishes before later
+camera commands are applied. Use `set_camera(eye, target, up?, fov?)` to update a
+whole pose atomically; exact top/down views have a stable up direction.
+
+Batch captures use one `shoot(shots)` call, or `msh remote --port N shoot shots.json`:
+
+```json
+[
+  {"eye": [0, 0.2, 3], "target": [0, 0, 0], "path": "shots/front.png"},
+  {"eye": [3, 0.2, 0], "target": [0, 0, 0], "path": "shots/side.png"}
+]
+```
+
+The batch completes without interleaving other commands and returns one
+`{path, width, height, error}` result per shot. `error` is null on success; an
+invalid camera or unwritable path does not drop subsequent shots. Optional
+`up` and `fov` fields override those camera settings for a shot.
+
+`backface_stats()` returns `backface_px`, its inclusive pixel `bbox`, `total_px`,
+`covered_px`, and `material_px`. Counts come from a dedicated depth-tested integer
+ID pass, not color thresholds. It counts the nearest fragment from either side;
+MASK uses the material cutoff, and BLEND counts alpha >= 0.5 as covered. UI,
+wireframe, lighting and ground are excluded. `material_px` sums duplicate or
+unnamed labels; the `materials` array preserves each material's unique ID and name.
+
+For visual diagnostics, use `--backfaces --backface-mode unlit` on `view` or
+`render`, or RPC `enable_backfaces()` and `set_backface_mode("unlit")`. This emits
+pure red while preserving material alpha cutouts. `lit` retains shaded red.
+`enable_ground()`, `disable_ground()` and `toggle_ground()` control the ground
+shadow; corresponding hyphenated CLI commands are available. **G** still toggles
+it in a native viewer. Transparent output omits the shadow automatically.
+
+`msh stats model.glb --json --weld-tolerance 0.000001` reports raw and
+position-welded topology separately. The default tolerance is one millionth of
+the bind-pose bounding-box extent, with a 1e-9 floor. Analysis leaves render UVs,
+normals, materials and skinning untouched. `is_manifold` includes surfaces with
+boundaries; use `is_closed` for a closed surface. Boundary loops are closed
+boundary components, not proof that the mesh has no self-intersections.
+
+Load all active scene meshes and instances with `--mesh all` (or RPC
+`load_model(path, "all")`). Node transforms and reflected winding are preserved.
+Combined skins must share joint nodes and inverse binds; palette order can differ.
+Different rigs are rejected explicitly. Existing single-mesh selection and N/P
+switching remain available. Unnamed meshes can be selected as `--mesh '#0'`.
+
+`view` and `render` accept `--clips other.glb` for meshes with skins but no embedded
+clips. RPC `load_clips(path)` attaches them to the current model;
+`list_animations()`, `set_animation(name_or_index)`, `set_time(seconds)` and
+`set_frame(frame, fps?)` provide deterministic paused poses. RPC frames use
+`frame / fps`, defaulting to 30 FPS. The existing CLI `--frames` range retains
+its evenly spaced sampling across the clip. Clip imports match unique joint
+names and validate hierarchy, rest axes and scale. Rest-relative translation
+transfer preserves target proportions; extra target helper joints retain their
+rest transforms. Missing or incompatible joints produce errors.
+
+Quantized `KHR_mesh_quantization` attributes and `EXT_meshopt_compression`
+buffers are decoded, including octahedral, quaternion and exponential filters.
+Texture-coordinate dequantization via `KHR_texture_transform` is applied per
+texture. Textures currently use TEXCOORD_0. Triangle primitives and up to 256
+joints are supported. Static meshes can also generate angle-only sprite sheets:
+
+```bash
+msh render model.obj --angles 8 --sprite-sheet --width 128 --height 128 \
+  --transparent-bg --out atlas.png
+```
+
+Automation limits: 128 queued commands; 1 MiB RPC requests; 1–64 shots per batch;
+8192 pixels per image axis and 16 megapixels per service image; 64 megapixels per
+batch or sprite render. glTF source/decoded mesh buffers and expanded accessors
+have 512 MiB budgets, and JSON metadata is limited to 64 MiB. The existing 256 MiB
+viewer vertex-buffer limit is checked before triangle-soup allocation. Oversized
+work returns errors. GPU captures have a bounded readback wait.
+
+GPU regression checks (the second command opens one labeled native window):
+
+```bash
+cargo test --test automation offscreen_automation_contract -- --ignored --nocapture
+cargo test --test automation native_automation_contract -- --ignored --nocapture
+# Optional compressed-fixture check:
+GLTFPACK=/usr/bin/gltfpack cargo test --test automation offscreen_automation_contract -- --ignored
+```
 
 #### Enable Remote Control
 
@@ -199,15 +231,10 @@ cargo build --features remote
 msh view model.obj --remote
 ```
 
-The viewer will start a JSON-RPC server on `http://127.0.0.1:9001` and display:
+By default the viewer binds `http://127.0.0.1:9001` and prints:
 
-```
-✓ RPC server ready at http://127.0.0.1:9001
-  Available methods:
-    - load_model(path, mesh_name?)
-    - set_rotation(x, y, z)
-    - rotate_around_axis(axis, angle)
-    ...
+```text
+RPC_READY http://127.0.0.1:9001
 ```
 
 #### Remote Commands
@@ -267,15 +294,7 @@ msh remote toggle-ui
 msh remote stats
 ```
 
-Output:
-
-```
-=== Mesh Statistics ===
-Vertices:  1234
-Edges:     3702
-Faces:     2468
-Manifold:  Yes
-```
+The command prints the current mesh statistics as JSON.
 
 **Take Screenshot**
 
@@ -414,7 +433,7 @@ curl -X POST http://127.0.0.1:9001 \
 
 Available methods:
 
-- `load_model(path: String, mesh_name: Option<String>)`
+- `load_model(path, mesh_name?, keep_camera?, clips?)` — returns statistics after upload
 - `set_rotation(x: f32, y: f32, z: f32)`
 - `rotate_around_axis(axis: Vec<f32>, angle: String)`
 - `set_camera_position(x: f32, y: f32, z: f32)`
@@ -423,13 +442,13 @@ Available methods:
 - `enable_backfaces()` / `disable_backfaces()` / `toggle_backfaces()`
 - `enable_ui()` / `disable_ui()` / `toggle_ui()`
 - `get_stats()` → `{vertices, edges, faces, is_manifold, holes}`
-- `screenshot(path: String)` - Save current view as PNG
+- `screenshot(path)` — returns `{path, width, height}` after saving the PNG
 - `capture_frame(path: Option<String>)` (requires `renderdoc` feature)
 - `quit()` - Exit the viewer
 
 ## Feature Flags
 
-- **`remote`**: Enables JSON-RPC server and remote control CLI
+- **`remote`** (enabled by default): Enables JSON-RPC server and remote control CLI
   - Dependencies: jsonrpsee, tokio, crossbeam
   - Build: `cargo build --features remote`
 

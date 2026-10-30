@@ -10,13 +10,14 @@ pub enum ProjectionMode {
 
 impl Default for ProjectionMode {
     fn default() -> Self {
-        ProjectionMode::Perspective { fov_y_degrees: 45.0 }
+        ProjectionMode::Perspective {
+            fov_y_degrees: 45.0,
+        }
     }
 }
 
 /// Shading mode for mesh rendering
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ShadingMode {
     /// Current two-light diffuse + specular
     #[default]
@@ -26,7 +27,6 @@ pub enum ShadingMode {
     /// Constant color, no lighting
     Unlit,
 }
-
 
 impl ShadingMode {
     pub fn as_u32(&self) -> u32 {
@@ -43,16 +43,19 @@ impl ShadingMode {
 pub enum Background {
     Solid([f32; 4]),
     /// Smooth radial gradient from `center` (middle of the frame) to `edge` (corners)
-    RadialGradient { center: [f32; 4], edge: [f32; 4] },
+    RadialGradient {
+        center: [f32; 4],
+        edge: [f32; 4],
+    },
 }
 
 impl Default for Background {
-    /// Black in the middle fading to dark gray at the edges
+    /// Medium-dark cool gray in the middle fading to dark gray at the edges
     fn default() -> Self {
         Background::RadialGradient {
-            center: [0.0, 0.0, 0.0, 1.0],
-            // ~sRGB 0.2 (51/255)
-            edge: [0.033, 0.033, 0.033, 1.0],
+            // Linear equivalents of sRGB #2e3135 and #191919.
+            center: [0.0273, 0.0307, 0.0356, 1.0],
+            edge: [0.0097, 0.0097, 0.0097, 1.0],
         }
     }
 }
@@ -65,9 +68,15 @@ pub struct ViewerState {
     /// UI visibility toggles
     pub show_wireframe: bool,
     pub show_backfaces: bool,
+    pub backface_unlit: bool,
+    pub show_ground: bool,
     pub show_ui: bool,
     /// Statistics for display and RPC queries
     pub stats: MeshStats,
+    pub window_title: Option<String>,
+    pub window_size: Option<[u32; 2]>,
+    pub rpc_address: Option<String>,
+    pub clips_path: Option<PathBuf>,
     /// Projection mode
     pub projection: ProjectionMode,
     /// Background behind the mesh
@@ -87,6 +96,7 @@ pub struct MeshStats {
     pub face_count: usize,
     pub is_manifold: bool,
     pub hole_count: usize,
+    pub topology: Option<crate::mesh::topology::TopologyReport>,
 }
 
 impl Default for ViewerState {
@@ -95,8 +105,14 @@ impl Default for ViewerState {
             model_rotation: na::Vector3::zeros(),
             show_wireframe: false,
             show_backfaces: false,
+            backface_unlit: false,
+            show_ground: true,
             show_ui: true,
             stats: MeshStats::default(),
+            window_title: None,
+            window_size: None,
+            rpc_address: None,
+            clips_path: None,
             projection: ProjectionMode::default(),
             background: Background::default(),
             shading: ShadingMode::default(),
@@ -106,13 +122,20 @@ impl Default for ViewerState {
     }
 }
 
-/// Commands sent from RPC thread to render thread
-#[derive(Debug, Clone)]
+#[cfg(feature = "remote")]
+pub type Reply<T> = tokio::sync::oneshot::Sender<Result<T, String>>;
+
+/// Commands are processed in order; a screenshot is a rendering barrier.
+#[cfg(feature = "remote")]
+#[derive(Debug)]
 pub enum ViewerCommand {
     /// Load a new mesh file
     LoadModel {
         path: PathBuf,
         mesh_name: Option<String>,
+        keep_camera: bool,
+        clips: Option<PathBuf>,
+        reply: Reply<crate::rpc::types::MeshStatsResponse>,
     },
     /// Set absolute model rotation (Euler angles in radians)
     SetRotation {
@@ -125,18 +148,47 @@ pub enum ViewerCommand {
         axis: na::Vector3<f32>,
         angle: f32,
     },
-    /// Set camera position
-    SetCameraPosition {
-        position: na::Point3<f32>,
+    /// Atomically update camera fields after validating the whole request.
+    SetCamera {
+        eye: Option<[f32; 3]>,
+        target: Option<[f32; 3]>,
+        up: Option<[f32; 3]>,
+        fov: Option<f32>,
+        reply: Reply<()>,
     },
-    /// Set camera target
-    SetCameraTarget {
-        target: na::Point3<f32>,
+    LoadClips {
+        path: PathBuf,
+        reply: Reply<Vec<crate::rpc::types::AnimationResponse>>,
+    },
+    SetAnimation {
+        name: String,
+        reply: Reply<crate::rpc::types::AnimationResponse>,
+    },
+    SetTime {
+        time: f32,
+        reply: Reply<crate::rpc::types::AnimationResponse>,
+    },
+    SetFrame {
+        frame: u32,
+        fps: f32,
+        reply: Reply<crate::rpc::types::AnimationResponse>,
+    },
+    ListAnimations {
+        reply: Reply<Vec<crate::rpc::types::AnimationResponse>>,
+    },
+    ToggleGround(Option<bool>),
+    Shoot {
+        shots: Vec<crate::rpc::types::Shot>,
+        reply: Reply<Vec<crate::rpc::types::ShotResult>>,
+    },
+    PixelStats {
+        reply: Reply<crate::rpc::types::PixelStats>,
     },
     /// Toggle wireframe display
     ToggleWireframe(bool),
     /// Toggle backface visualization
     ToggleBackfaces(bool),
+    SetBackfaceMode(bool),
     /// Toggle UI overlay
     ToggleUI(bool),
     /// Capture frame (RenderDoc)
@@ -147,6 +199,7 @@ pub enum ViewerCommand {
     /// Take a screenshot (save to PNG)
     Screenshot {
         path: String,
+        reply: Reply<crate::rpc::types::ScreenshotResponse>,
     },
     /// Set projection mode
     SetProjection {
@@ -186,6 +239,8 @@ pub struct RenderPreset {
     pub light_direction: [f32; 3],
     pub show_wireframe: bool,
     pub show_backfaces: bool,
+    pub backface_unlit: bool,
+    pub show_ground: bool,
     pub show_ui: bool,
 }
 
@@ -193,13 +248,17 @@ impl RenderPreset {
     /// Default interactive viewer preset
     pub fn viewer() -> Self {
         Self {
-            projection: ProjectionMode::Perspective { fov_y_degrees: 45.0 },
+            projection: ProjectionMode::Perspective {
+                fov_y_degrees: 45.0,
+            },
             background: Background::default(),
             shading: ShadingMode::Lit,
             base_color: [0.85, 0.85, 0.85, 1.0],
             light_direction: [0.5, 1.0, 0.5],
             show_wireframe: false,
             show_backfaces: false,
+            backface_unlit: false,
+            show_ground: true,
             show_ui: true,
         }
     }
@@ -214,6 +273,8 @@ impl RenderPreset {
             light_direction: [0.5, 1.0, 0.8],
             show_wireframe: false,
             show_backfaces: false,
+            backface_unlit: false,
+            show_ground: false,
             show_ui: false,
         }
     }
@@ -234,8 +295,14 @@ impl ViewerState {
             model_rotation: na::Vector3::zeros(),
             show_wireframe: false,
             show_backfaces: false,
+            backface_unlit: false,
+            show_ground: true,
             show_ui: true,
             stats,
+            window_title: None,
+            window_size: None,
+            rpc_address: None,
+            clips_path: None,
             projection: ProjectionMode::default(),
             background: Background::default(),
             shading: ShadingMode::default(),
@@ -253,6 +320,8 @@ impl ViewerState {
         self.light_direction = preset.light_direction;
         self.show_wireframe = preset.show_wireframe;
         self.show_backfaces = preset.show_backfaces;
+        self.backface_unlit = preset.backface_unlit;
+        self.show_ground = preset.show_ground;
         self.show_ui = preset.show_ui;
     }
 
@@ -274,5 +343,31 @@ impl ViewerState {
         // Convert back to Euler angles
         let (x, y, z) = new_rotation.euler_angles();
         self.model_rotation = na::Vector3::new(x, y, z);
+    }
+}
+
+impl MeshStats {
+    pub fn from_mesh(
+        data: &crate::mesh::loader::MeshWithColors,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let bytes = data
+            .face_indices
+            .len()
+            .checked_mul(3 * std::mem::size_of::<super::mesh_renderer::Vertex>())
+            .ok_or("Viewer vertex buffer size overflow")?;
+        let limit = wgpu::Limits::default().max_buffer_size;
+        if bytes as u64 > limit {
+            return Err(format!("Mesh needs {bytes} vertex-buffer bytes; viewer device limit is {limit}. Simplify the mesh before viewing.").into());
+        }
+        let topology =
+            crate::mesh::topology::report(&data.bind_positions(), &data.face_indices, None)?;
+        Ok(Self {
+            vertex_count: data.positions.len(),
+            face_count: data.face_indices.len(),
+            edge_count: topology.raw.edges,
+            is_manifold: topology.raw.is_manifold,
+            hole_count: topology.raw.boundary_loops,
+            topology: Some(topology),
+        })
     }
 }

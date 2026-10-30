@@ -50,7 +50,7 @@ impl ArcBallCamera {
 
     /// Get view matrix
     pub fn view_matrix(&self) -> na::Matrix4<f32> {
-        na::Matrix4::look_at_rh(&self.eye, &self.target, &self.up)
+        na::Matrix4::look_at_rh(&self.eye, &self.target, &self.view_up())
     }
 
     /// Get projection matrix for a specific projection mode
@@ -65,7 +65,8 @@ impl ArcBallCamera {
                 let half_w = half_h * aspect;
                 // nalgebra's new_orthographic maps z to [-1,1] (OpenGL convention).
                 // wgpu uses [0,1] depth (Vulkan/Metal/DX12), so remap: z' = z * 0.5 + 0.5
-                let mut proj = na::Matrix4::new_orthographic(-half_w, half_w, -half_h, half_h, 0.1, 1000.0);
+                let mut proj =
+                    na::Matrix4::new_orthographic(-half_w, half_w, -half_h, half_h, 0.1, 1000.0);
                 // Apply z remapping: scale z by 0.5 and offset by 0.5
                 proj[(2, 2)] *= 0.5;
                 proj[(2, 3)] = proj[(2, 3)] * 0.5 + 0.5;
@@ -97,7 +98,7 @@ impl ArcBallCamera {
 
         // Calculate right and up vectors in camera space
         let forward = (self.target - self.eye).normalize();
-        let right = forward.cross(&self.up).normalize();
+        let right = forward.cross(&self.view_up()).normalize();
         let up = right.cross(&forward);
 
         // Move target and eye together
@@ -119,28 +120,50 @@ impl ArcBallCamera {
         self.eye.z = self.target.z + self.distance * self.theta.cos() * self.phi.cos();
     }
 
-    /// Set camera position
-    pub fn set_position(&mut self, position: na::Point3<f32>) {
-        self.eye = position;
-        let to_target = self.target - self.eye;
-        self.distance = to_target.norm();
-
-        // Recalculate angles
-        let horizontal_dist = (to_target.x * to_target.x + to_target.z * to_target.z).sqrt();
-        self.theta = (-to_target.y).atan2(horizontal_dist);
-        self.phi = to_target.x.atan2(to_target.z);
+    /// Update a complete pose without exposing an intermediate invalid look-at.
+    pub fn set_pose(
+        &mut self,
+        eye: Option<[f32; 3]>,
+        target: Option<[f32; 3]>,
+        up: Option<[f32; 3]>,
+    ) -> Result<(), String> {
+        let eye = eye.map(na::Point3::from).unwrap_or(self.eye);
+        let target = target.map(na::Point3::from).unwrap_or(self.target);
+        let up = up.map(na::Vector3::from).unwrap_or(self.up);
+        if !eye
+            .iter()
+            .chain(target.iter())
+            .chain(up.iter())
+            .all(|v| v.is_finite())
+        {
+            return Err("Camera coordinates must be finite".into());
+        }
+        let to_eye = eye - target;
+        if to_eye.norm_squared() < 1e-12 || up.norm_squared() < 1e-12 {
+            return Err("Camera eye must differ from target and up must be nonzero".into());
+        }
+        self.eye = eye;
+        self.target = target;
+        self.up = up.normalize();
+        self.distance = to_eye.norm();
+        let horizontal = to_eye.x.hypot(to_eye.z);
+        self.theta = (-to_eye.y).atan2(horizontal);
+        self.phi = to_eye.x.atan2(to_eye.z);
+        Ok(())
     }
 
-    /// Set camera target
-    pub fn set_target(&mut self, target: na::Point3<f32>) {
-        self.target = target;
-        let to_target = self.target - self.eye;
-        self.distance = to_target.norm();
-
-        // Recalculate angles
-        let horizontal_dist = (to_target.x * to_target.x + to_target.z * to_target.z).sqrt();
-        self.theta = (-to_target.y).atan2(horizontal_dist);
-        self.phi = to_target.x.atan2(to_target.z);
+    // A camera at a pole needs an up vector orthogonal to the viewing direction.
+    fn view_up(&self) -> na::Vector3<f32> {
+        let forward = (self.target - self.eye).normalize();
+        if forward.cross(&self.up).norm_squared() < 1e-8 {
+            if forward.z.abs() < 0.9 {
+                na::Vector3::z()
+            } else {
+                na::Vector3::x()
+            }
+        } else {
+            self.up
+        }
     }
 
     /// Get current position
@@ -152,5 +175,41 @@ impl ArcBallCamera {
     pub fn resize(&mut self, width: u32, height: u32) {
         self.width = width;
         self.height = height;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn setting_pose_preserves_orbit_and_pole_views_are_finite() {
+        let mut camera = ArcBallCamera::new(
+            na::Point3::new(3.0, 2.0, 4.0),
+            na::Point3::origin(),
+            800,
+            600,
+        );
+        camera
+            .set_pose(Some([4.0, 6.0, -2.0]), Some([1.0, 2.0, 1.0]), None)
+            .unwrap();
+        let eye = camera.position();
+        camera.rotate(0.0, 0.0);
+        assert!((camera.position() - eye).norm() < 1e-5);
+        for y in [-5.0, 5.0] {
+            camera
+                .set_pose(Some([1.0, y, 1.0]), Some([1.0, 0.0, 1.0]), None)
+                .unwrap();
+            assert!(camera.view_matrix().iter().all(|v| v.is_finite()));
+            camera.pan(2.0, 3.0);
+            assert!(camera.view_matrix().iter().all(|v| v.is_finite()));
+        }
+        let eye = camera.position();
+        assert!(
+            camera
+                .set_pose(Some([f32::NAN, 0.0, 0.0]), None, None)
+                .is_err()
+        );
+        assert_eq!(camera.position(), eye);
     }
 }

@@ -1,10 +1,16 @@
+pub mod bvh_viewer;
 pub mod camera;
 pub mod gpu;
+mod ground;
 pub mod mesh_renderer;
+mod pose;
+mod readback;
 pub mod render;
+#[cfg(feature = "remote")]
+pub mod serve;
+mod shadow;
 pub mod state;
 pub mod ui_renderer;
-pub mod bvh_viewer;
 
 mod shaders {
     // Empty module to include shader directory
@@ -19,9 +25,11 @@ pub mod renderdoc_helper;
 pub mod headless;
 pub mod sprite_sheet;
 
-pub use render::view_mesh_with_bvh;
 pub use bvh_viewer::view_bvh;
-pub use state::{ViewerCommand, ViewerState};
+pub use render::view_mesh_with_bvh;
+#[cfg(feature = "remote")]
+pub use state::ViewerCommand;
+pub use state::ViewerState;
 
 #[cfg(feature = "remote")]
 pub use rpc_viewer::view_mesh_with_rpc;

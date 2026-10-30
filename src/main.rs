@@ -203,6 +203,12 @@ enum Commands {
         /// Mesh name (required if GLB contains multiple meshes)
         #[arg(short, long)]
         mesh: Option<String>,
+        /// Machine-readable raw and welded topology
+        #[arg(long)]
+        json: bool,
+        /// Absolute position-weld distance for analysis only
+        #[arg(long)]
+        weld_tolerance: Option<f64>,
     },
 
     /// View mesh in a 3D viewer
@@ -224,6 +230,19 @@ enum Commands {
         #[cfg(feature = "remote")]
         #[arg(long)]
         remote: bool,
+
+        /// Loopback RPC port; 0 chooses a free port and prints RPC_READY
+        #[cfg(feature = "remote")]
+        #[arg(long, default_value_t = 9001)]
+        port: u16,
+
+        /// Initial window dimensions, e.g. 800x600 (compositor may override)
+        #[arg(long, value_parser = parse_size)]
+        size: Option<[u32; 2]>,
+
+        /// Label the viewer window
+        #[arg(long)]
+        title: Option<String>,
 
         /// Disable vsync (unlocked framerate)
         #[arg(long)]
@@ -248,6 +267,18 @@ enum Commands {
         /// Use transparent background
         #[arg(long)]
         transparent_bg: bool,
+
+        /// Hide the ground-plane shadow
+        #[arg(long)]
+        no_ground: bool,
+
+        /// Show reversed-facing surfaces in red
+        #[arg(long)]
+        backfaces: bool,
+
+        /// Backface diagnostic shading
+        #[arg(long, default_value = "lit", value_parser = ["lit", "unlit"])]
+        backface_mode: String,
 
         /// Shading mode: lit, flat, or unlit
         #[arg(long)]
@@ -276,6 +307,10 @@ enum Commands {
         /// Animation clip name or index to play on load (default: first)
         #[arg(long)]
         animation: Option<String>,
+
+        /// Import compatible animation clips from a separate GLB/glTF file
+        #[arg(long)]
+        clips: Option<PathBuf>,
 
         /// Uniform scale multiplier (e.g. 50 to scale up a 1-unit model to 50 units)
         #[arg(long)]
@@ -328,6 +363,18 @@ enum Commands {
         #[arg(long)]
         transparent_bg: bool,
 
+        /// Hide the ground-plane shadow
+        #[arg(long)]
+        no_ground: bool,
+
+        /// Show reversed-facing surfaces in red
+        #[arg(long)]
+        backfaces: bool,
+
+        /// Backface diagnostic shading
+        #[arg(long, default_value = "lit", value_parser = ["lit", "unlit"])]
+        backface_mode: String,
+
         /// Shading mode: lit, flat, or unlit
         #[arg(long)]
         shading: Option<String>,
@@ -360,6 +407,10 @@ enum Commands {
         #[arg(long)]
         animation: Option<String>,
 
+        /// Import compatible animation clips from a separate GLB/glTF file
+        #[arg(long)]
+        clips: Option<PathBuf>,
+
         /// Render a single animation frame (0-based frame number)
         #[arg(long)]
         frame: Option<usize>,
@@ -369,7 +420,7 @@ enum Commands {
         frames: Option<String>,
 
         /// Number of rotation angles for multi-directional rendering (e.g. 8 for 8-directional)
-        #[arg(long, default_value_t = 1)]
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=64))]
         angles: u32,
 
         /// Rotation offset in degrees added to all angle steps (e.g. 5 shifts 0°,45°,90°... to 5°,50°,95°...)
@@ -469,9 +520,33 @@ enum Commands {
         json: bool,
     },
 
+    /// Serve persistent offscreen rendering without a desktop window
+    #[cfg(feature = "remote")]
+    Serve {
+        #[arg(long, default_value_t = 9001)]
+        port: u16,
+        #[arg(long, default_value = "800x600", value_parser = parse_size)]
+        size: [u32; 2],
+        #[arg(long)]
+        no_ground: bool,
+        #[arg(long)]
+        clips: Option<PathBuf>,
+        #[arg(long, value_parser = parse_color)]
+        clear_color: Option<(f32, f32, f32, f32)>,
+        #[arg(long, default_value = "lit", value_parser = ["lit","flat","unlit"])]
+        shading: String,
+        #[arg(long)]
+        backfaces: bool,
+        #[arg(long, default_value = "lit", value_parser = ["lit","unlit"])]
+        backface_mode: String,
+    },
+
     /// Remote control commands for running viewer
     #[cfg(feature = "remote")]
     Remote {
+        /// Port of the viewer or offscreen service
+        #[arg(long, global = true, default_value_t = 9001)]
+        port: u16,
         #[command(subcommand)]
         command: RemoteCommands,
     },
@@ -488,6 +563,11 @@ enum RemoteCommands {
         /// Mesh name (for GLB with multiple meshes)
         #[arg(short, long)]
         mesh: Option<String>,
+        /// Preserve the existing camera pose
+        #[arg(long)]
+        keep_camera: bool,
+        #[arg(long)]
+        clips: Option<PathBuf>,
     },
 
     /// Set absolute model rotation (Euler angles)
@@ -534,6 +614,21 @@ enum RemoteCommands {
         z: f32,
     },
 
+    /// Set eye and target together; optional up and vertical FOV
+    Camera {
+        #[arg(long, value_parser = parse_axis, allow_hyphen_values = true)]
+        eye: (f32, f32, f32),
+        #[arg(long, value_parser = parse_axis, allow_hyphen_values = true)]
+        target: (f32, f32, f32),
+        #[arg(long, value_parser = parse_axis, allow_hyphen_values = true)]
+        up: Option<(f32, f32, f32)>,
+        #[arg(long)]
+        fov: Option<f32>,
+    },
+    EnableGround,
+    DisableGround,
+    ToggleGround,
+
     /// Enable wireframe display
     EnableWireframe,
 
@@ -560,6 +655,34 @@ enum RemoteCommands {
 
     /// Toggle UI overlay
     ToggleUi,
+
+    /// Attach a compatible external animation file to the loaded skin
+    LoadClips {
+        path: PathBuf,
+    },
+    /// List clip names, durations and selected time
+    ListAnimations,
+    /// Select a clip by name or index, paused at time zero
+    SetAnimation {
+        name: String,
+    },
+    /// Pause at an exact clip time in seconds
+    SetTime {
+        time: f32,
+    },
+    /// Pause at frame / fps seconds (default 30 FPS)
+    SetFrame {
+        frame: u32,
+        #[arg(long, default_value_t = 30.0)]
+        fps: f32,
+    },
+
+    /// Exact visible material and backface pixel counts from an integer ID pass
+    BackfaceStats,
+    /// Capture an ordered batch described by a JSON array file
+    Shoot {
+        file: PathBuf,
+    },
 
     /// Get mesh statistics from running viewer
     Stats,
@@ -611,6 +734,12 @@ enum RemoteCommands {
         a: f32,
     },
 
+    /// Choose lit red or unlit pure red backface diagnostics
+    SetBackfaceMode {
+        #[arg(value_parser = ["lit", "unlit"])]
+        mode: String,
+    },
+
     /// Set light direction
     #[command(allow_negative_numbers = true)]
     SetLightDir {
@@ -634,10 +763,22 @@ fn parse_color(s: &str) -> Result<(f32, f32, f32, f32), String> {
     if parts.len() != 4 {
         return Err("Color must be in format: r,g,b,a".to_string());
     }
-    let r = parts[0].trim().parse::<f32>().map_err(|_| format!("Invalid r value: {}", parts[0]))?;
-    let g = parts[1].trim().parse::<f32>().map_err(|_| format!("Invalid g value: {}", parts[1]))?;
-    let b = parts[2].trim().parse::<f32>().map_err(|_| format!("Invalid b value: {}", parts[2]))?;
-    let a = parts[3].trim().parse::<f32>().map_err(|_| format!("Invalid a value: {}", parts[3]))?;
+    let r = parts[0]
+        .trim()
+        .parse::<f32>()
+        .map_err(|_| format!("Invalid r value: {}", parts[0]))?;
+    let g = parts[1]
+        .trim()
+        .parse::<f32>()
+        .map_err(|_| format!("Invalid g value: {}", parts[1]))?;
+    let b = parts[2]
+        .trim()
+        .parse::<f32>()
+        .map_err(|_| format!("Invalid b value: {}", parts[2]))?;
+    let a = parts[3]
+        .trim()
+        .parse::<f32>()
+        .map_err(|_| format!("Invalid a value: {}", parts[3]))?;
     Ok((r, g, b, a))
 }
 
@@ -690,7 +831,10 @@ fn parse_frame_range(s: &str) -> Result<(usize, usize, usize), String> {
             .parse::<usize>()
             .map_err(|_| format!("Invalid end frame: '{}'", right.trim()))?;
         if end < start {
-            return Err(format!("End frame {} is less than start frame {}", end, start));
+            return Err(format!(
+                "End frame {} is less than start frame {}",
+                end, start
+            ));
         }
         Ok((start, end, step))
     } else {
@@ -759,7 +903,9 @@ fn main() {
                             }
                         };
                         if original.skeleton.is_none() || original.joint_indices.is_empty() {
-                            eprintln!("Warning: input has no skin data, --preserve-weights has no effect");
+                            eprintln!(
+                                "Warning: input has no skin data, --preserve-weights has no effect"
+                            );
                         }
 
                         // Run QEM simplification to a temp file
@@ -838,11 +984,10 @@ fn main() {
                     crease_angle,
                     snap_threshold,
                 }) => {
-                    use mesh::projection::{
-                        average_edge_length, project_with_solver,
-                        ProjectionConfig, SpatialHashGrid,
-                    };
                     use mesh::loader::load_mesh_with_colors;
+                    use mesh::projection::{
+                        ProjectionConfig, SpatialHashGrid, average_edge_length, project_with_solver,
+                    };
 
                     // Load simplified mesh
                     let simplified = match load_mesh_with_colors(&input, mesh.as_deref()) {
@@ -906,12 +1051,7 @@ fn main() {
                         iterations,
                         alpha,
                     );
-                    let stats = project_with_solver(
-                        &mut positions,
-                        &triangles,
-                        &grid,
-                        &config,
-                    );
+                    let stats = project_with_solver(&mut positions, &triangles, &grid, &config);
 
                     println!(
                         "Done: {} iterations, avg displacement {:.6}, max displacement {:.6}",
@@ -932,10 +1072,12 @@ fn main() {
                             tri[2] + 1
                         ));
                     }
-                    std::fs::write(&out, &obj_content).map_err(|e| {
-                        eprintln!("Error writing output: {}", e);
-                        std::process::exit(1);
-                    }).ok();
+                    std::fs::write(&out, &obj_content)
+                        .map_err(|e| {
+                            eprintln!("Error writing output: {}", e);
+                            std::process::exit(1);
+                        })
+                        .ok();
                     println!("Written to {}", out_str);
                 }
                 Some(RemeshCommands::Voxel {
@@ -959,7 +1101,9 @@ fn main() {
                             }
                         };
                         if original.skeleton.is_none() || original.joint_indices.is_empty() {
-                            eprintln!("Warning: input has no skin data, --preserve-weights has no effect");
+                            eprintln!(
+                                "Warning: input has no skin data, --preserve-weights has no effect"
+                            );
                         }
 
                         // Voxel remesh to temp file
@@ -1039,8 +1183,13 @@ fn main() {
                 }
             }
         }
-        Commands::Stats { input, mesh } => {
-            if let Err(e) = mesh::show_stats(&input, mesh.as_deref()) {
+        Commands::Stats {
+            input,
+            mesh,
+            json,
+            weld_tolerance,
+        } => {
+            if let Err(e) = mesh::show_stats(&input, mesh.as_deref(), json, weld_tolerance) {
                 eprintln!("Error reading mesh stats: {}", e);
                 std::process::exit(1);
             }
@@ -1050,12 +1199,19 @@ fn main() {
             mesh,
             #[cfg(feature = "remote")]
             remote,
+            #[cfg(feature = "remote")]
+            port,
+            size,
+            title,
             no_vsync,
             projection,
             ortho_height,
             fov_deg,
             clear_color,
             transparent_bg,
+            no_ground,
+            backfaces,
+            backface_mode,
             shading,
             base_color,
             light_dir,
@@ -1063,13 +1219,19 @@ fn main() {
             z_up,
             bvh,
             animation,
+            clips,
             scale,
             no_center,
         } => {
-            use viewer::state::{Background, ProjectionMode, ShadingMode, RenderPreset, ViewerState};
+            use viewer::state::{
+                Background, ProjectionMode, RenderPreset, ShadingMode, ViewerState,
+            };
 
             // Build initial render state from CLI flags
             let build_state = |state: &mut ViewerState| {
+                state.clips_path = clips.clone();
+                state.window_size = size;
+                state.window_title = title.clone();
                 // Apply preset first (individual flags override)
                 if let Some(ref preset_name) = preset {
                     if let Some(p) = RenderPreset::by_name(preset_name) {
@@ -1082,8 +1244,12 @@ fn main() {
                 // Individual overrides
                 if let Some(ref proj) = projection {
                     state.projection = match proj.as_str() {
-                        "perspective" => ProjectionMode::Perspective { fov_y_degrees: fov_deg.unwrap_or(45.0) },
-                        "ortho" | "orthographic" => ProjectionMode::Orthographic { world_height: ortho_height.unwrap_or(10.0) },
+                        "perspective" => ProjectionMode::Perspective {
+                            fov_y_degrees: fov_deg.unwrap_or(45.0),
+                        },
+                        "ortho" | "orthographic" => ProjectionMode::Orthographic {
+                            world_height: ortho_height.unwrap_or(10.0),
+                        },
                         _ => {
                             eprintln!("Invalid projection: {}. Use 'perspective' or 'ortho'", proj);
                             std::process::exit(1);
@@ -1100,6 +1266,13 @@ fn main() {
                 if transparent_bg {
                     state.background = Background::Solid([0.0, 0.0, 0.0, 0.0]);
                 }
+                if no_ground {
+                    state.show_ground = false;
+                }
+                if backfaces {
+                    state.show_backfaces = true;
+                }
+                state.backface_unlit = backface_mode == "unlit";
                 if let Some((r, g, b, a)) = clear_color {
                     state.background = Background::Solid([r, g, b, a]);
                 }
@@ -1141,13 +1314,32 @@ fn main() {
             #[cfg(feature = "remote")]
             {
                 if remote {
-                    if let Err(e) = viewer::view_mesh_with_rpc(input.as_ref(), mesh.as_deref(), no_vsync, z_up, build_state) {
+                    if let Err(e) = viewer::view_mesh_with_rpc(
+                        input.as_ref(),
+                        mesh.as_deref(),
+                        no_vsync,
+                        z_up,
+                        port,
+                        build_state,
+                    ) {
                         eprintln!("Error viewing mesh: {}", e);
                         std::process::exit(1);
                     }
                 } else {
-                    let input_ref = input.as_ref().expect("input required when not using --remote");
-                    if let Err(e) = viewer::view_mesh_with_bvh(input_ref, mesh.as_deref(), no_vsync, z_up, bvh.as_ref(), animation.as_deref(), scale, no_center, build_state) {
+                    let input_ref = input
+                        .as_ref()
+                        .expect("input required when not using --remote");
+                    if let Err(e) = viewer::view_mesh_with_bvh(
+                        input_ref,
+                        mesh.as_deref(),
+                        no_vsync,
+                        z_up,
+                        bvh.as_ref(),
+                        animation.as_deref(),
+                        scale,
+                        no_center,
+                        build_state,
+                    ) {
                         eprintln!("Error viewing mesh: {}", e);
                         std::process::exit(1);
                     }
@@ -1155,7 +1347,17 @@ fn main() {
             }
             #[cfg(not(feature = "remote"))]
             {
-                if let Err(e) = viewer::view_mesh_with_bvh(&input, mesh.as_deref(), no_vsync, z_up, bvh.as_ref(), animation.as_deref(), scale, no_center, build_state) {
+                if let Err(e) = viewer::view_mesh_with_bvh(
+                    &input,
+                    mesh.as_deref(),
+                    no_vsync,
+                    z_up,
+                    bvh.as_ref(),
+                    animation.as_deref(),
+                    scale,
+                    no_center,
+                    build_state,
+                ) {
                     eprintln!("Error viewing mesh: {}", e);
                     std::process::exit(1);
                 }
@@ -1172,6 +1374,9 @@ fn main() {
             fov_deg,
             clear_color,
             transparent_bg,
+            no_ground,
+            backfaces,
+            backface_mode,
             shading,
             base_color,
             light_dir,
@@ -1180,6 +1385,7 @@ fn main() {
             camera_pos,
             camera_target,
             animation,
+            clips,
             frame,
             frames,
             angles,
@@ -1188,11 +1394,14 @@ fn main() {
             scale,
             no_center,
         } => {
-            use viewer::state::{Background, ProjectionMode, ShadingMode, RenderPreset, ViewerState};
             use mesh::animation::frame_to_time;
             use mesh::loader::load_mesh_with_colors;
+            use viewer::state::{
+                Background, ProjectionMode, RenderPreset, ShadingMode, ViewerState,
+            };
 
             let build_state = |state: &mut ViewerState| {
+                state.clips_path = clips.clone();
                 if let Some(ref preset_name) = preset {
                     if let Some(p) = RenderPreset::by_name(preset_name) {
                         state.apply_preset(&p);
@@ -1203,8 +1412,12 @@ fn main() {
                 }
                 if let Some(ref proj) = projection {
                     state.projection = match proj.as_str() {
-                        "perspective" => ProjectionMode::Perspective { fov_y_degrees: fov_deg.unwrap_or(45.0) },
-                        "ortho" | "orthographic" => ProjectionMode::Orthographic { world_height: ortho_height.unwrap_or(10.0) },
+                        "perspective" => ProjectionMode::Perspective {
+                            fov_y_degrees: fov_deg.unwrap_or(45.0),
+                        },
+                        "ortho" | "orthographic" => ProjectionMode::Orthographic {
+                            world_height: ortho_height.unwrap_or(10.0),
+                        },
                         _ => {
                             eprintln!("Invalid projection: {}. Use 'perspective' or 'ortho'", proj);
                             std::process::exit(1);
@@ -1221,6 +1434,13 @@ fn main() {
                 if transparent_bg {
                     state.background = Background::Solid([0.0, 0.0, 0.0, 0.0]);
                 }
+                if no_ground {
+                    state.show_ground = false;
+                }
+                if backfaces {
+                    state.show_backfaces = true;
+                }
+                state.backface_unlit = backface_mode == "unlit";
                 if let Some((r, g, b, a)) = clear_color {
                     state.background = Background::Solid([r, g, b, a]);
                 }
@@ -1246,12 +1466,24 @@ fn main() {
             let out_str = out.to_string_lossy().to_string();
 
             // Determine if we're doing animation/sprite-sheet rendering
-            let has_animation_args = frame.is_some() || frames.is_some();
+            let has_animation_args = frame.is_some() || frames.is_some() || animation.is_some();
 
             if !has_animation_args && !sprite_sheet && angles == 1 {
                 // --- Original single-image render path ---
                 if let Err(e) = viewer::headless::render_to_file(
-                    &input, &out_str, mesh.as_deref(), width, height, z_up, camera_pos, camera_target, None, None, scale, no_center, build_state,
+                    &input,
+                    &out_str,
+                    mesh.as_deref(),
+                    width,
+                    height,
+                    z_up,
+                    camera_pos,
+                    camera_target,
+                    None,
+                    None,
+                    scale,
+                    no_center,
+                    build_state,
                 ) {
                     eprintln!("Error rendering: {}", e);
                     std::process::exit(1);
@@ -1261,13 +1493,20 @@ fn main() {
                 // --- Animation / sprite-sheet render path ---
 
                 // Load mesh to inspect animations
-                let mesh_data = match load_mesh_with_colors(&input, mesh.as_deref()) {
+                let mut mesh_data = match load_mesh_with_colors(&input, mesh.as_deref()) {
                     Ok(m) => m,
                     Err(e) => {
                         eprintln!("Error loading mesh: {}", e);
                         std::process::exit(1);
                     }
                 };
+
+                if let Some(path) = &clips
+                    && let Err(error) = mesh::clips::attach(&mut mesh_data, path)
+                {
+                    eprintln!("Error loading external clips: {error}");
+                    std::process::exit(1);
+                }
 
                 // Resolve animation index from --animation (name or index)
                 let anim_index: usize = if let Some(ref anim_arg) = animation {
@@ -1283,12 +1522,17 @@ fn main() {
                         idx
                     } else {
                         // Search by name
-                        match mesh_data.animations.iter().position(|a| {
-                            a.name.as_deref() == Some(anim_arg.as_str())
-                        }) {
+                        match mesh_data
+                            .animations
+                            .iter()
+                            .position(|a| a.name.as_deref() == Some(anim_arg.as_str()))
+                        {
                             Some(idx) => idx,
                             None => {
-                                eprintln!("Animation '{}' not found. Available animations:", anim_arg);
+                                eprintln!(
+                                    "Animation '{}' not found. Available animations:",
+                                    anim_arg
+                                );
                                 for (i, a) in mesh_data.animations.iter().enumerate() {
                                     eprintln!(
                                         "  [{}] {}",
@@ -1304,12 +1548,12 @@ fn main() {
                     0 // default to first animation
                 };
 
-                if mesh_data.animations.is_empty() {
+                if mesh_data.animations.is_empty() && (has_animation_args || animation.is_some()) {
                     eprintln!("Error: model has no animations");
                     std::process::exit(1);
                 }
 
-                let clip = &mesh_data.animations[anim_index];
+                let clip = mesh_data.animations.get(anim_index);
 
                 // Determine frame range and step
                 let (frame_start, frame_end, frame_step) = if let Some(ref frames_str) = frames {
@@ -1328,12 +1572,30 @@ fn main() {
                     (0, 0, 1)
                 };
 
-                let total_frames = frame_end + 1; // total_frames parameter for frame_to_time
+                let total_frames = frame_end.checked_add(1).unwrap_or_else(|| {
+                    eprintln!("Frame range overflows");
+                    std::process::exit(1)
+                });
+                let requested_frames = (frame_end - frame_start) / frame_step + 1;
+                if requested_frames > 4096 {
+                    eprintln!("At most 4096 frames per render request");
+                    std::process::exit(1);
+                }
+                // Validate output work before collecting frame vectors or allocating tiles.
+                if u64::from(width)
+                    .checked_mul(u64::from(height))
+                    .and_then(|n| n.checked_mul(requested_frames as u64))
+                    .and_then(|n| n.checked_mul(u64::from(angles)))
+                    .is_none_or(|n| n > 67_108_864)
+                {
+                    eprintln!("Render request exceeds 64 megapixels total");
+                    std::process::exit(1);
+                }
 
                 // Compute animation times for each frame (with step)
                 let frame_times: Vec<f32> = (frame_start..=frame_end)
                     .step_by(frame_step)
-                    .map(|f| frame_to_time(clip, f, total_frames))
+                    .map(|f| clip.map_or(0.0, |clip| frame_to_time(clip, f, total_frames)))
                     .collect();
                 let frame_count = frame_times.len();
 
@@ -1364,7 +1626,10 @@ fn main() {
                         eprintln!("Error rendering: {}", e);
                         std::process::exit(1);
                     }
-                    println!("Rendered frame {} (t={:.3}s) to {}", frame_start, anim_time, out_str);
+                    println!(
+                        "Rendered frame {} (t={:.3}s) to {}",
+                        frame_start, anim_time, out_str
+                    );
                 } else if sprite_sheet {
                     // Sprite sheet atlas mode
                     let config = viewer::sprite_sheet::SpriteSheetConfig {
@@ -1467,9 +1732,14 @@ fn main() {
 
             let original_verts = mesh_data.positions.len();
             let original_faces = mesh_data.face_indices.len();
-            println!("Input: {} vertices, {} faces", original_verts, original_faces);
+            println!(
+                "Input: {} vertices, {} faces",
+                original_verts, original_faces
+            );
 
-            if preserve_weights && (mesh_data.skeleton.is_none() || mesh_data.joint_indices.is_empty()) {
+            if preserve_weights
+                && (mesh_data.skeleton.is_none() || mesh_data.joint_indices.is_empty())
+            {
                 eprintln!("Warning: input has no skin data, --preserve-weights has no effect");
             }
 
@@ -1483,9 +1753,7 @@ fn main() {
                         max[i] = max[i].max(pos[i]);
                     }
                 }
-                let max_dim = (max[0] - min[0])
-                    .max(max[1] - min[1])
-                    .max(max[2] - min[2]);
+                let max_dim = (max[0] - min[0]).max(max[1] - min[1]).max(max[2] - min[2]);
                 let auto_size = max_dim / resolution as f32;
                 println!(
                     "Auto voxel size: {:.6} (bbox {:.3}, resolution {})",
@@ -1635,22 +1903,52 @@ fn main() {
         }
 
         #[cfg(feature = "remote")]
-        Commands::Remote { command } => {
-            handle_remote_command(command);
+        Commands::Serve {
+            port,
+            size,
+            no_ground,
+            clips,
+            clear_color,
+            shading,
+            backfaces,
+            backface_mode,
+        } => {
+            let result = viewer::serve::serve(port, size, |state| {
+                state.clips_path = clips;
+                state.show_ground = !no_ground;
+                state.show_backfaces = backfaces;
+                state.backface_unlit = backface_mode == "unlit";
+                if let Some((r, g, b, a)) = clear_color {
+                    state.background = viewer::state::Background::Solid([r, g, b, a]);
+                }
+                state.shading = match shading.as_str() {
+                    "flat" => viewer::state::ShadingMode::Flat,
+                    "unlit" => viewer::state::ShadingMode::Unlit,
+                    _ => viewer::state::ShadingMode::Lit,
+                };
+            });
+            if let Err(error) = result {
+                eprintln!("Offscreen service failed: {error}");
+                std::process::exit(1);
+            }
+        }
+        #[cfg(feature = "remote")]
+        Commands::Remote { command, port } => {
+            handle_remote_command(command, port);
         }
     }
 }
 
 #[cfg(feature = "remote")]
-fn handle_remote_command(command: RemoteCommands) {
+fn handle_remote_command(command: RemoteCommands, port: u16) {
     use remote::client;
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
 
     let result = rt.block_on(async {
-        let url = "http://127.0.0.1:9001";
+        let url = format!("http://127.0.0.1:{port}");
 
-        let client = match client::create_client(url).await {
+        let client = match client::create_client(&url).await {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("Failed to connect to viewer at {}.", url);
@@ -1661,10 +1959,21 @@ fn handle_remote_command(command: RemoteCommands) {
         };
 
         let result: Result<(), Box<dyn std::error::Error>> = match command {
-            RemoteCommands::Load { path, mesh } => {
-                let response =
-                    client::load_model(&client, path.to_string_lossy().to_string(), mesh).await?;
-                println!("{}", response);
+            RemoteCommands::Load {
+                path,
+                mesh,
+                keep_camera,
+                clips,
+            } => {
+                let response = client::load_model(
+                    &client,
+                    path.to_string_lossy().to_string(),
+                    mesh,
+                    keep_camera,
+                    clips.map(|p| p.to_string_lossy().into_owned()),
+                )
+                .await?;
+                println!("{}", serde_json::to_string(&response)?);
                 Ok(())
             }
             RemoteCommands::Rotate { x, y, z } => {
@@ -1686,6 +1995,33 @@ fn handle_remote_command(command: RemoteCommands) {
             RemoteCommands::CameraTarget { x, y, z } => {
                 let response = client::set_camera_target(&client, x, y, z).await?;
                 println!("{}", response);
+                Ok(())
+            }
+            RemoteCommands::Camera {
+                eye,
+                target,
+                up,
+                fov,
+            } => {
+                let response =
+                    client::set_camera(&client, eye.into(), target.into(), up.map(Into::into), fov)
+                        .await?;
+                println!("{response}");
+                Ok(())
+            }
+            RemoteCommands::EnableGround
+            | RemoteCommands::DisableGround
+            | RemoteCommands::ToggleGround => {
+                let method = match command {
+                    RemoteCommands::EnableGround => "enable_ground",
+                    RemoteCommands::DisableGround => "disable_ground",
+                    _ => "toggle_ground",
+                };
+                use jsonrpsee::core::client::ClientT;
+                let response: String = client
+                    .request(method, jsonrpsee::core::params::ArrayParams::new())
+                    .await?;
+                println!("{response}");
                 Ok(())
             }
             RemoteCommands::EnableWireframe => {
@@ -1733,6 +2069,76 @@ fn handle_remote_command(command: RemoteCommands) {
                 println!("{}", response);
                 Ok(())
             }
+            RemoteCommands::LoadClips { path } => {
+                use jsonrpsee::core::client::ClientT;
+                let result: serde_json::Value = client
+                    .request("load_clips", (path.to_string_lossy().into_owned(),))
+                    .await?;
+                println!("{}", serde_json::to_string(&result)?);
+                Ok(())
+            }
+            RemoteCommands::ListAnimations => {
+                use jsonrpsee::core::client::ClientT;
+                let result: serde_json::Value = client
+                    .request(
+                        "list_animations",
+                        jsonrpsee::core::params::ArrayParams::new(),
+                    )
+                    .await?;
+                println!("{}", serde_json::to_string(&result)?);
+                Ok(())
+            }
+            RemoteCommands::SetAnimation { name } => {
+                use jsonrpsee::core::client::ClientT;
+                let result: serde_json::Value = client.request("set_animation", (name,)).await?;
+                println!("{}", serde_json::to_string(&result)?);
+                Ok(())
+            }
+            RemoteCommands::SetTime { time } => {
+                use jsonrpsee::core::client::ClientT;
+                let result: serde_json::Value = client.request("set_time", (time,)).await?;
+                println!("{}", serde_json::to_string(&result)?);
+                Ok(())
+            }
+            RemoteCommands::SetFrame { frame, fps } => {
+                use jsonrpsee::core::client::ClientT;
+                let result: serde_json::Value = client.request("set_frame", (frame, fps)).await?;
+                println!("{}", serde_json::to_string(&result)?);
+                Ok(())
+            }
+            RemoteCommands::BackfaceStats => {
+                use jsonrpsee::core::client::ClientT;
+                let result: crate::rpc::types::PixelStats = client
+                    .request(
+                        "backface_stats",
+                        jsonrpsee::core::params::ArrayParams::new(),
+                    )
+                    .await?;
+                println!("{}", serde_json::to_string(&result)?);
+                Ok(())
+            }
+            RemoteCommands::Shoot { file } => {
+                use jsonrpsee::core::client::ClientT;
+                use std::io::Read;
+                let mut bytes = Vec::new();
+                std::fs::File::open(file)?
+                    .take(1024 * 1024 + 1)
+                    .read_to_end(&mut bytes)?;
+                if bytes.len() > 1024 * 1024 {
+                    return Err("Shot file exceeds 1 MiB".into());
+                }
+                let mut shots: Vec<crate::rpc::types::Shot> = serde_json::from_slice(&bytes)?;
+                let cwd = std::env::current_dir()?;
+                for shot in &mut shots {
+                    if !std::path::Path::new(&shot.path).is_absolute() {
+                        shot.path = cwd.join(&shot.path).to_string_lossy().into();
+                    }
+                }
+                let result: Vec<crate::rpc::types::ShotResult> =
+                    client.request("shoot", (shots,)).await?;
+                println!("{}", serde_json::to_string(&result)?);
+                Ok(())
+            }
             RemoteCommands::Stats => {
                 let stats = client::get_stats(&client).await?;
                 println!("\n=== Mesh Statistics ===");
@@ -1751,7 +2157,7 @@ fn handle_remote_command(command: RemoteCommands) {
                 let absolute_path = if let Some(p) = &path {
                     let path_buf = std::path::PathBuf::from(p);
                     if path_buf.is_absolute() {
-                        println!("Using absolute path: {}", p);
+                        eprintln!("Using absolute path: {}", p);
                         Some(p.clone())
                     } else {
                         // Make relative paths absolute based on caller's working directory
@@ -1759,7 +2165,7 @@ fn handle_remote_command(command: RemoteCommands) {
                             .map_err(|e| format!("Failed to get current directory: {}", e))?;
                         let abs = cwd.join(path_buf);
                         let abs_str = abs.to_string_lossy().to_string();
-                        println!("Resolved relative path '{}' to: {}", p, abs_str);
+                        eprintln!("Resolved relative path '{}' to: {}", p, abs_str);
                         Some(abs_str)
                     }
                 } else {
@@ -1774,19 +2180,19 @@ fn handle_remote_command(command: RemoteCommands) {
                 // Convert relative paths to absolute (relative to caller's cwd)
                 let path_buf = std::path::PathBuf::from(&path);
                 let absolute_path = if path_buf.is_absolute() {
-                    println!("Using absolute path: {}", path);
+                    eprintln!("Using absolute path: {}", path);
                     path.clone()
                 } else {
                     let cwd = std::env::current_dir()
                         .map_err(|e| format!("Failed to get current directory: {}", e))?;
                     let abs = cwd.join(path_buf);
                     let abs_str = abs.to_string_lossy().to_string();
-                    println!("Resolved relative path '{}' to: {}", path, abs_str);
+                    eprintln!("Resolved relative path '{}' to: {}", path, abs_str);
                     abs_str
                 };
 
                 let response = client::screenshot(&client, absolute_path).await?;
-                println!("{}", response);
+                println!("{}", serde_json::to_string(&response)?);
                 Ok(())
             }
             RemoteCommands::SetProjection { mode, value } => {
@@ -1814,6 +2220,12 @@ fn handle_remote_command(command: RemoteCommands) {
                 println!("{}", response);
                 Ok(())
             }
+            RemoteCommands::SetBackfaceMode { mode } => {
+                use jsonrpsee::core::client::ClientT;
+                let response: String = client.request("set_backface_mode", (mode,)).await?;
+                println!("{response}");
+                Ok(())
+            }
             RemoteCommands::SetLightDir { x, y, z } => {
                 let response = client::set_light_direction(&client, x, y, z).await?;
                 println!("{}", response);
@@ -1838,4 +2250,20 @@ fn handle_remote_command(command: RemoteCommands) {
         eprintln!("Remote command failed: {}", e);
         std::process::exit(1);
     }
+}
+
+fn parse_size(value: &str) -> Result<[u32; 2], String> {
+    let (w, h) = value
+        .split_once(['x', 'X'])
+        .ok_or("Size must be WIDTHxHEIGHT")?;
+    let size = [
+        w.parse::<u32>().map_err(|e| e.to_string())?,
+        h.parse::<u32>().map_err(|e| e.to_string())?,
+    ];
+    if size.iter().any(|&v| v == 0 || v > 8192)
+        || u64::from(size[0]) * u64::from(size[1]) > 16_777_216
+    {
+        return Err("Size must be positive, at most 8192 per axis and 16 megapixels total".into());
+    }
+    Ok(size)
 }

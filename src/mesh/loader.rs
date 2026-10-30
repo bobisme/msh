@@ -8,7 +8,7 @@ use super::skeleton::{Joint, JointTransform, Skeleton};
 
 /// Embedded texture image data
 pub struct TextureData {
-    pub pixels: Vec<u8>,  // RGBA8
+    pub pixels: Vec<u8>, // RGBA8
     pub width: u32,
     pub height: u32,
 }
@@ -37,6 +37,8 @@ pub struct MaterialData {
     /// Occlusion in R (often the same image as metallic_roughness_texture, i.e. ORM)
     pub occlusion_texture: Option<usize>,
     pub occlusion_strength: f32,
+    /// Two affine rows per texture: base color, normal, metallic/roughness, occlusion.
+    pub uv_transforms: [[f32; 4]; 8],
     pub alpha_mode: AlphaMode,
     pub alpha_cutoff: f32,
     pub double_sided: bool,
@@ -56,6 +58,7 @@ impl Default for MaterialData {
             normal_scale: 1.0,
             occlusion_texture: None,
             occlusion_strength: 1.0,
+            uv_transforms: identity_uv_transforms(),
             alpha_mode: AlphaMode::Opaque,
             alpha_cutoff: 0.5,
             double_sided: false,
@@ -121,6 +124,44 @@ impl MeshWithColors {
             t[1] = t[2];
             t[2] = -y;
         }
+    }
+
+    /// Actual bind-pose positions in scene space. Quantized skins can encode their
+    /// dequantization in inverse binds rather than in mesh-node transforms.
+    pub fn bind_positions(&self) -> Vec<[f32; 3]> {
+        let matrices = self.skeleton.as_ref().map(|s| s.compute_joint_matrices());
+        self.positions
+            .iter()
+            .enumerate()
+            .map(|(index, &position)| {
+                if let Some(matrices) = &matrices
+                    && self
+                        .joint_weights
+                        .get(index)
+                        .is_some_and(|weights| weights.iter().any(|&w| w > 0.0))
+                {
+                    let mut p = nalgebra::Vector4::zeros();
+                    for (&joint, &weight) in self.joint_indices[index]
+                        .iter()
+                        .zip(&self.joint_weights[index])
+                    {
+                        if weight > 0.0 {
+                            p += nalgebra::Matrix4::from(matrices[joint as usize])
+                                * nalgebra::Vector4::new(
+                                    position[0],
+                                    position[1],
+                                    position[2],
+                                    1.0,
+                                )
+                                * weight;
+                        }
+                    }
+                    [p.x, p.y, p.z]
+                } else {
+                    position
+                }
+            })
+            .collect()
     }
 
     /// Build a CornerTableF from the parsed geometry (for mesh stats)
@@ -303,9 +344,10 @@ fn parse_mtl(path: &Path) -> Result<HashMap<String, [f32; 4]>, Box<dyn std::erro
                 current_color = [parts[0], parts[1], parts[2], 1.0];
             }
         } else if let Some(d_val) = line.strip_prefix("d ")
-            && let Ok(alpha) = d_val.trim().parse::<f32>() {
-                current_color[3] = alpha;
-            }
+            && let Ok(alpha) = d_val.trim().parse::<f32>()
+        {
+            current_color[3] = alpha;
+        }
     }
 
     // Save last material
@@ -323,49 +365,159 @@ fn load_glb_with_colors(
     path: &PathBuf,
     mesh_name: Option<&str>,
 ) -> Result<MeshWithColors, Box<dyn std::error::Error>> {
-    let (document, buffers, images) = gltf::import(path)?;
+    let (document, buffers, images) = super::gltf_import::import(path)?;
 
     let meshes: Vec<_> = document.meshes().collect();
     if meshes.is_empty() {
         return Err("GLB file contains no meshes".into());
     }
 
-    let selected_mesh = if meshes.len() == 1 {
-        &meshes[0]
+    let all = mesh_name == Some("all");
+    let selected_index = if all {
+        None
+    } else if meshes.len() == 1 {
+        Some(meshes[0].index())
     } else {
-        match mesh_name {
-            None => {
-                let mesh_list: Vec<String> = meshes
-                    .iter()
-                    .map(|m| m.name().unwrap_or("<unnamed>").to_string())
-                    .collect();
-                return Err(format!(
-                    "GLB file contains {} meshes. Please specify one with --mesh <name>.\nAvailable meshes: {}",
-                    meshes.len(),
-                    mesh_list.join(", ")
-                ).into());
-            }
-            Some(name) => meshes
+        let name = mesh_name.ok_or_else(|| {
+            format!(
+                "GLB contains {} meshes; select --mesh <name> or --mesh all",
+                meshes.len()
+            )
+        })?;
+        Some(
+            meshes
                 .iter()
-                .find(|m| m.name() == Some(name))
-                .ok_or_else(|| {
-                    let mesh_list: Vec<String> = meshes
-                        .iter()
-                        .map(|m| m.name().unwrap_or("<unnamed>").to_string())
-                        .collect();
-                    format!(
-                        "Mesh '{}' not found in GLB file.\nAvailable meshes: {}",
-                        name,
-                        mesh_list.join(", ")
-                    )
-                })?,
-        }
+                .find(|m| m.name() == Some(name) || name == format!("#{}", m.index()))
+                .ok_or_else(|| format!("Mesh '{name}' not found"))?
+                .index(),
+        )
     };
-
-    println!(
-        "Loading mesh: {}",
-        selected_mesh.name().unwrap_or("<unnamed>")
-    );
+    let (world, _) = super::scene_graph::world_transforms(&document)?;
+    let nodes: Vec<_> = document.nodes().collect();
+    let mut active = vec![false; nodes.len()];
+    let mut pending: Vec<_> = document
+        .default_scene()
+        .or_else(|| document.scenes().next())
+        .map(|s| s.nodes().map(|n| n.index()).collect())
+        .unwrap_or_default();
+    while let Some(index) = pending.pop() {
+        if active[index] {
+            continue;
+        }
+        active[index] = true;
+        pending.extend(nodes[index].children().map(|n| n.index()));
+    }
+    let mut selected = Vec::new();
+    for node in document.nodes() {
+        if let Some(mesh) = node.mesh()
+            && (active[node.index()] || !all)
+            && selected_index.is_none_or(|index| mesh.index() == index)
+        {
+            selected.push((mesh, node.skin(), world[node.index()]));
+            if !all {
+                break;
+            }
+        }
+    }
+    if selected.is_empty() {
+        for mesh in &meshes {
+            if selected_index.is_none_or(|index| mesh.index() == index) {
+                selected.push((mesh.clone(), None, nalgebra::Matrix4::identity()));
+            }
+        }
+    }
+    // Bound expansion before instancing or skin arrays allocate: tiny source buffers
+    // can otherwise be referenced by arbitrarily many scene nodes.
+    let mut expanded = 0usize;
+    for (mesh, _, _) in &selected {
+        for primitive in mesh.primitives() {
+            let vertices = primitive
+                .get(&gltf::Semantic::Positions)
+                .map_or(0, |a| a.count());
+            let indices = primitive.indices().map_or(vertices, |a| a.count());
+            let bytes = vertices
+                .checked_mul(72)
+                .and_then(|v| indices.checked_mul(8).and_then(|i| v.checked_add(i)))
+                .ok_or("Instanced geometry size overflow")?;
+            expanded = expanded
+                .checked_add(bytes)
+                .ok_or("Instanced geometry size overflow")?;
+            if expanded > 512 * 1024 * 1024 {
+                return Err("Instanced mesh geometry exceeds 512 MiB budget".into());
+            }
+            if primitive.attributes().any(|(_, a)| a.count() != vertices) {
+                return Err("Primitive attribute counts differ from positions".into());
+            }
+        }
+    }
+    let mut skin_cache = HashMap::new();
+    let mut skeleton = None;
+    let mut joint_indices = Vec::new();
+    let mut joint_weights = Vec::new();
+    let mut skin_identity: Option<HashMap<usize, (usize, [[f32; 4]; 4])>> = None;
+    let mut skin_remaps: HashMap<usize, Vec<u16>> = HashMap::new();
+    // Shared joint nodes and inverse binds can use one palette. Skin-order
+    // differences are remapped; genuinely different rigs are rejected.
+    for (mesh, skin, _) in &selected {
+        if let Some(skin) = skin {
+            let key = (mesh.index(), skin.index());
+            if !skin_cache.contains_key(&key) {
+                let (skeleton, indices, weights) =
+                    extract_skin_data(skin, mesh, &document, &buffers)?;
+                skin_cache.insert(key, (skeleton.unwrap(), indices, weights));
+            }
+            let (candidate, indices, weights) = &skin_cache[&key];
+            if skeleton.is_none() {
+                skin_identity = Some(
+                    candidate
+                        .joints
+                        .iter()
+                        .map(|j| (j.node_index, (j.index, j.inverse_bind_matrix)))
+                        .collect(),
+                );
+                skeleton = Some(candidate.clone());
+            }
+            if !skin_remaps.contains_key(&skin.index()) {
+                let reference = skin_identity.as_ref().unwrap();
+                if candidate.joints.len() != reference.len() {
+                    return Err(
+                        "--mesh all requires skins with shared joint nodes and inverse binds"
+                            .into(),
+                    );
+                }
+                let remap: Result<Vec<u16>, _> = candidate
+                    .joints
+                    .iter()
+                    .map(|joint| {
+                        reference
+                            .get(&joint.node_index)
+                            .filter(|(_, matrix)| matrix == &joint.inverse_bind_matrix)
+                            .map(|(index, _)| *index as u16)
+                            .ok_or("--mesh all cannot combine different rigs or inverse binds")
+                    })
+                    .collect();
+                skin_remaps.insert(skin.index(), remap?);
+            }
+            let remap = &skin_remaps[&skin.index()];
+            joint_indices.extend(
+                indices
+                    .iter()
+                    .map(|j| j.map(|index| remap.get(index as usize).copied().unwrap_or(0))),
+            );
+            joint_weights.extend_from_slice(weights);
+        } else {
+            let count: usize = mesh
+                .primitives()
+                .map(|p| p.get(&gltf::Semantic::Positions).map_or(0, |a| a.count()))
+                .sum();
+            joint_indices.extend(std::iter::repeat_n([0u16; 4], count));
+            joint_weights.extend(std::iter::repeat_n([0.0f32; 4], count));
+        }
+    }
+    if skeleton.is_none() {
+        joint_indices.clear();
+        joint_weights.clear();
+    }
 
     let mut positions: Vec<[f32; 3]> = Vec::new();
     let mut texcoords: Vec<[f32; 2]> = Vec::new();
@@ -382,69 +534,126 @@ fn load_glb_with_colors(
     let mut material_map: HashMap<usize, u32> = HashMap::new();
     let mut texture_map: HashMap<usize, usize> = HashMap::new();
 
-    for primitive in selected_mesh.primitives() {
-        let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
-
-        let prim_positions = reader
-            .read_positions()
-            .ok_or("Primitive has no position data")?;
-        let pos_vec: Vec<[f32; 3]> = prim_positions.collect();
-        let vert_count = pos_vec.len();
-        positions.extend_from_slice(&pos_vec);
-
-        // Read UV coordinates
-        if let Some(tex_coords) = reader.read_tex_coords(0) {
-            let uv_vec: Vec<[f32; 2]> = tex_coords.into_f32().collect();
-            texcoords.extend_from_slice(&uv_vec);
-        } else {
-            // No UVs for this primitive — fill with zeros
-            texcoords.extend(std::iter::repeat_n([0.0f32; 2], vert_count));
-        }
-
-        if let Some(prim_normals) = reader.read_normals() {
-            has_normals = true;
-            normals.extend(prim_normals);
-        } else {
-            normals.extend(std::iter::repeat_n([0.0f32; 3], vert_count));
-        }
-
-        if let Some(prim_tangents) = reader.read_tangents() {
-            has_tangents = true;
-            tangents.extend(prim_tangents);
-        } else {
-            tangents.extend(std::iter::repeat_n([0.0f32; 4], vert_count));
-        }
-
-        let material = primitive.material();
-        let material_idx = match material.index() {
-            None => NO_MATERIAL,
-            Some(gltf_idx) => *material_map.entry(gltf_idx).or_insert_with(|| {
-                let data = convert_material(&material, &images, &mut materials.textures, &mut texture_map);
-                materials.materials.push(data);
-                (materials.materials.len() - 1) as u32
-            }),
-        };
-
-        // Get indices and build face list
-        let idx_list: Vec<u32> = if let Some(indices) = reader.read_indices() {
-            indices.into_u32().collect()
-        } else {
-            (0..pos_vec.len() as u32).collect()
-        };
-
-        // Build triangles
-        for chunk in idx_list.chunks(3) {
-            if chunk.len() == 3 {
-                face_indices.push([
-                    chunk[0] + vertex_offset,
-                    chunk[1] + vertex_offset,
-                    chunk[2] + vertex_offset,
-                ]);
-                face_materials.push(material_idx);
+    for (selected_mesh, skin, transform) in &selected {
+        let linear = transform.fixed_view::<3, 3>(0, 0).into_owned();
+        let normal_matrix = linear
+            .try_inverse()
+            .map(|m| m.transpose())
+            .unwrap_or_else(nalgebra::Matrix3::zeros);
+        let reflected = skin.is_none() && linear.determinant() < 0.0;
+        for primitive in selected_mesh.primitives() {
+            if primitive.mode() != gltf::mesh::Mode::Triangles {
+                return Err("Only triangle primitives are supported".into());
             }
-        }
+            let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
 
-        vertex_offset += pos_vec.len() as u32;
+            let prim_positions = reader
+                .read_positions()
+                .ok_or("Primitive has no position data")?;
+            let pos_vec: Vec<[f32; 3]> = prim_positions.collect();
+            let vert_count = pos_vec.len();
+            if skin.is_some() {
+                positions.extend_from_slice(&pos_vec);
+            } else {
+                positions.extend(pos_vec.iter().map(|p| -> [f32; 3] {
+                    transform
+                        .transform_point(&nalgebra::Point3::from(*p))
+                        .coords
+                        .into()
+                }));
+            }
+
+            // Read UV coordinates
+            if let Some(tex_coords) = reader.read_tex_coords(0) {
+                let uv_vec: Vec<[f32; 2]> = tex_coords.into_f32().collect();
+                texcoords.extend_from_slice(&uv_vec);
+            } else {
+                // No UVs for this primitive — fill with zeros
+                texcoords.extend(std::iter::repeat_n([0.0f32; 2], vert_count));
+            }
+
+            if let Some(prim_normals) = reader.read_normals() {
+                has_normals = true;
+                normals.extend(prim_normals.map(|normal| -> [f32; 3] {
+                    if skin.is_some() {
+                        normal
+                    } else {
+                        (normal_matrix * nalgebra::Vector3::from(normal)).into()
+                    }
+                }));
+            } else {
+                normals.extend(std::iter::repeat_n([0.0f32; 3], vert_count));
+            }
+
+            if let Some(prim_tangents) = reader.read_tangents() {
+                has_tangents = true;
+                tangents.extend(prim_tangents.map(|tangent| {
+                    if skin.is_some() {
+                        tangent
+                    } else {
+                        let t = linear * nalgebra::Vector3::new(tangent[0], tangent[1], tangent[2]);
+                        [
+                            t.x,
+                            t.y,
+                            t.z,
+                            tangent[3] * if reflected { -1.0 } else { 1.0 },
+                        ]
+                    }
+                }));
+            } else {
+                tangents.extend(std::iter::repeat_n([0.0f32; 4], vert_count));
+            }
+
+            let material = primitive.material();
+            let material_idx = match material.index() {
+                None => NO_MATERIAL,
+                Some(gltf_idx) => {
+                    if let Some(&index) = material_map.get(&gltf_idx) {
+                        index
+                    } else {
+                        let mut data = convert_material(
+                            &material,
+                            &images,
+                            &mut materials.textures,
+                            &mut texture_map,
+                        );
+                        let json = serde_json::to_value(&document.as_json().materials[gltf_idx])?;
+                        data.uv_transforms = material_uv_transforms(&json)?;
+                        let index = materials.materials.len() as u32;
+                        materials.materials.push(data);
+                        material_map.insert(gltf_idx, index);
+                        index
+                    }
+                }
+            };
+
+            // Get indices and build face list
+            let idx_list: Vec<u32> = if let Some(indices) = reader.read_indices() {
+                indices.into_u32().collect()
+            } else {
+                (0..pos_vec.len() as u32).collect()
+            };
+
+            if idx_list.len() % 3 != 0 || idx_list.iter().any(|&index| index as usize >= vert_count)
+            {
+                return Err("Invalid triangle indices".into());
+            }
+            // Build triangles
+            for chunk in idx_list.chunks(3) {
+                if chunk.len() == 3 {
+                    face_indices.push([
+                        chunk[0] + vertex_offset,
+                        chunk[if reflected { 2 } else { 1 }] + vertex_offset,
+                        chunk[if reflected { 1 } else { 2 }] + vertex_offset,
+                    ]);
+                    face_materials.push(material_idx);
+                }
+            }
+
+            vertex_offset = vertex_offset
+                .checked_add(u32::try_from(pos_vec.len())?)
+                .ok_or("Combined vertex count exceeds u32")?;
+        }
     }
 
     // If no UVs were found at all, clear the texcoords vec
@@ -462,31 +671,15 @@ fn load_glb_with_colors(
         face_materials.clear();
     }
 
-    // --- Skin data extraction ---
-    // Find the node that binds the selected mesh to a skin
-    let skin_node = document.nodes().find(|node| {
-        node.mesh().is_some_and(|m| m.index() == selected_mesh.index()) && node.skin().is_some()
-    });
-
-    let (skeleton, joint_indices, joint_weights) = if let Some(node) = skin_node {
-        let skin = node.skin().unwrap();
-        extract_skin_data(&skin, selected_mesh, &document, &buffers)?
-    } else {
-        (None, Vec::new(), Vec::new())
-    };
-
     // Extract animation clips, mapping node indices to joint indices via the skeleton
-    let joint_node_indices: Option<Vec<usize>> = skeleton.as_ref().map(|s| {
-        s.joints.iter().map(|j| j.node_index).collect()
-    });
-    let animations = animation::extract_animations(
-        &document,
-        &buffers,
-        joint_node_indices.as_deref(),
-    );
+    let joint_node_indices: Option<Vec<usize>> = skeleton
+        .as_ref()
+        .map(|s| s.joints.iter().map(|j| j.node_index).collect());
+    let animations =
+        animation::extract_animations(&document, &buffers, joint_node_indices.as_deref());
 
     if !animations.is_empty() {
-        println!(
+        eprintln!(
             "Loaded {} animation clip(s): {}",
             animations.len(),
             animations
@@ -498,7 +691,7 @@ fn load_glb_with_colors(
     }
 
     if let Some(ref skel) = skeleton {
-        println!(
+        eprintln!(
             "Loaded skeleton with {} joints, {} skinned vertices",
             skel.joints.len(),
             joint_indices.len(),
@@ -519,6 +712,71 @@ fn load_glb_with_colors(
         joint_weights,
         animations,
     })
+}
+
+pub(crate) fn identity_uv_transforms() -> [[f32; 4]; 8] {
+    [
+        [1., 0., 0., 0.],
+        [0., 1., 0., 0.],
+        [1., 0., 0., 0.],
+        [0., 1., 0., 0.],
+        [1., 0., 0., 0.],
+        [0., 1., 0., 0.],
+        [1., 0., 0., 0.],
+        [0., 1., 0., 0.],
+    ]
+}
+fn material_uv_transforms(
+    material: &serde_json::Value,
+) -> Result<[[f32; 4]; 8], Box<dyn std::error::Error>> {
+    let infos = [
+        &material["pbrMetallicRoughness"]["baseColorTexture"],
+        &material["normalTexture"],
+        &material["pbrMetallicRoughness"]["metallicRoughnessTexture"],
+        &material["occlusionTexture"],
+    ];
+    let mut rows = identity_uv_transforms();
+    for (slot, info) in infos.into_iter().enumerate() {
+        if info.is_null() {
+            continue;
+        }
+        let transform = &info["extensions"]["KHR_texture_transform"];
+        if transform
+            .get("texCoord")
+            .or_else(|| info.get("texCoord"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+            != 0
+        {
+            return Err("This viewer currently supports TEXCOORD_0 textures only".into());
+        }
+        let pair = |key: &str, default: [f32; 2]| -> Result<[f32; 2], Box<dyn std::error::Error>> {
+            if transform.get(key).is_none() {
+                return Ok(default);
+            }
+            let a = transform[key]
+                .as_array()
+                .filter(|a| a.len() == 2)
+                .ok_or("Invalid texture transform vector")?;
+            Ok([
+                a[0].as_f64().ok_or("Invalid texture transform component")? as f32,
+                a[1].as_f64().ok_or("Invalid texture transform component")? as f32,
+            ])
+        };
+        let offset = pair("offset", [0., 0.])?;
+        let scale = pair("scale", [1., 1.])?;
+        let rotation = transform
+            .get("rotation")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0) as f32;
+        let (sin, cos) = rotation.sin_cos();
+        rows[slot * 2] = [cos * scale[0], -sin * scale[1], offset[0], 0.];
+        rows[slot * 2 + 1] = [sin * scale[0], cos * scale[1], offset[1], 0.];
+    }
+    if rows.iter().flatten().any(|v| !v.is_finite()) {
+        return Err("Nonfinite texture transform".into());
+    }
+    Ok(rows)
 }
 
 /// Convert a glTF material, decoding any images it references into `textures`
@@ -545,11 +803,14 @@ fn convert_material(
     let occlusion = material.occlusion_texture();
     MaterialData {
         name: material.name().map(String::from),
+        uv_transforms: identity_uv_transforms(),
         base_color_factor: pbr.base_color_factor(),
         base_color_texture: pbr.base_color_texture().and_then(|t| load(t.texture())),
         metallic_factor: pbr.metallic_factor(),
         roughness_factor: pbr.roughness_factor(),
-        metallic_roughness_texture: pbr.metallic_roughness_texture().and_then(|t| load(t.texture())),
+        metallic_roughness_texture: pbr
+            .metallic_roughness_texture()
+            .and_then(|t| load(t.texture())),
         normal_scale: normal.as_ref().map_or(1.0, |n| n.scale()),
         normal_texture: normal.and_then(|n| load(n.texture())),
         occlusion_strength: occlusion.as_ref().map_or(1.0, |o| o.strength()),
@@ -574,10 +835,17 @@ fn convert_image(img: &gltf::image::Data) -> Option<TextureData> {
             .chunks(3)
             .flat_map(|c| [c[0], c[1], c[2], 255])
             .collect(),
-        Format::R8G8 => img.pixels.chunks(2).flat_map(|c| [c[0], c[1], 0, 255]).collect(),
+        Format::R8G8 => img
+            .pixels
+            .chunks(2)
+            .flat_map(|c| [c[0], c[1], 0, 255])
+            .collect(),
         Format::R8 => img.pixels.iter().flat_map(|&v| [v, v, v, 255]).collect(),
         _ => {
-            eprintln!("Warning: unsupported texture format {:?}, skipping", img.format);
+            eprintln!(
+                "Warning: unsupported texture format {:?}, skipping",
+                img.format
+            );
             return None;
         }
     };
@@ -588,16 +856,11 @@ fn convert_image(img: &gltf::image::Data) -> Option<TextureData> {
     })
 }
 
-/// Extract skeleton, per-vertex joint indices, and per-vertex weights from a glTF skin.
-fn extract_skin_data(
+pub(crate) fn extract_skeleton(
     skin: &gltf::Skin<'_>,
-    mesh: &gltf::Mesh<'_>,
     document: &gltf::Document,
     buffers: &[gltf::buffer::Data],
-) -> Result<
-    (Option<Skeleton>, Vec<[u16; 4]>, Vec<[f32; 4]>),
-    Box<dyn std::error::Error>,
-> {
+) -> Result<Skeleton, Box<dyn std::error::Error>> {
     let get_buf = |buffer: gltf::Buffer<'_>| Some(&*buffers[buffer.index()]);
 
     // Build parent map: child_node_index -> parent_node_index
@@ -631,15 +894,28 @@ fn extract_skin_data(
         .map(|iter| iter.collect())
         .unwrap_or_else(|| vec![identity; joint_nodes.len()]);
 
+    if joint_nodes.is_empty() || joint_nodes.len() > 256 || ibms.len() < joint_nodes.len() {
+        return Err("Skin requires 1..256 joints and enough inverse bind matrices".into());
+    }
+    let nodes: Vec<_> = document.nodes().collect();
+    super::scene_graph::world_transforms(document)?;
     // Build joints
     let joints: Vec<Joint> = joint_nodes
         .iter()
         .enumerate()
         .map(|(ji, node)| {
-            let parent_joint = parent_map
-                .get(&node.index())
-                .and_then(|parent_node_idx| node_to_joint.get(parent_node_idx))
-                .copied();
+            let mut parent_joint = None;
+            let mut parent_transform = nalgebra::Matrix4::identity();
+            let mut cursor = parent_map.get(&node.index()).copied();
+            while let Some(parent) = cursor {
+                if let Some(&joint) = node_to_joint.get(&parent) {
+                    parent_joint = Some(joint);
+                    break;
+                }
+                parent_transform =
+                    nalgebra::Matrix4::from(nodes[parent].transform().matrix()) * parent_transform;
+                cursor = parent_map.get(&parent).copied();
+            }
 
             let local_transform = match node.transform() {
                 gltf::scene::Transform::Decomposed {
@@ -659,13 +935,25 @@ fn extract_skin_data(
                 node_index: node.index(),
                 name: node.name().map(|s| s.to_string()),
                 parent: parent_joint,
+                parent_transform: parent_transform.into(),
                 inverse_bind_matrix: ibms[ji],
                 local_transform,
             }
         })
         .collect();
 
-    let skeleton = Skeleton { joints };
+    Ok(Skeleton { joints })
+}
+
+/// Extract skeleton, per-vertex joint indices, and per-vertex weights from a glTF skin.
+fn extract_skin_data(
+    skin: &gltf::Skin<'_>,
+    mesh: &gltf::Mesh<'_>,
+    document: &gltf::Document,
+    buffers: &[gltf::buffer::Data],
+) -> Result<(Option<Skeleton>, Vec<[u16; 4]>, Vec<[f32; 4]>), Box<dyn std::error::Error>> {
+    let skeleton = extract_skeleton(skin, document, buffers)?;
+    let get_buf = |buffer: gltf::Buffer<'_>| Some(&*buffers[buffer.index()]);
 
     // Read per-vertex JOINTS_0 and WEIGHTS_0 from all primitives (concatenated in primitive order)
     let mut all_joint_indices: Vec<[u16; 4]> = Vec::new();
@@ -674,6 +962,8 @@ fn extract_skin_data(
     for primitive in mesh.primitives() {
         let reader = primitive.reader(get_buf);
         let vert_count = reader.read_positions().map(|p| p.count()).unwrap_or(0);
+        let start_indices = all_joint_indices.len();
+        let start_weights = all_joint_weights.len();
 
         // Need a fresh reader for joints (the previous one consumed positions)
         let reader = primitive.reader(get_buf);
@@ -690,8 +980,37 @@ fn extract_skin_data(
         } else {
             all_joint_weights.extend(std::iter::repeat_n([0.0f32; 4], vert_count));
         }
+        if all_joint_indices.len() - start_indices != vert_count
+            || all_joint_weights.len() - start_weights != vert_count
+        {
+            return Err("Skin attribute counts differ from positions".into());
+        }
     }
 
+    if all_joint_indices.len() != all_joint_weights.len() {
+        return Err("Skin indices/weights have different lengths".into());
+    }
+    for (indices, weights) in all_joint_indices.iter().zip(&mut all_joint_weights) {
+        if weights.iter().any(|w| !w.is_finite() || *w < 0.0) {
+            return Err("Skin weights must be nonnegative and finite".into());
+        }
+        if indices
+            .iter()
+            .zip(weights.iter())
+            .any(|(&i, &w)| w > 0.0 && i as usize >= skeleton.joints.len())
+        {
+            return Err("Skin joint index exceeds palette".into());
+        }
+        let sum: f32 = weights.iter().sum();
+        if !sum.is_finite() {
+            return Err("Skin weight sum must be finite".into());
+        }
+        if sum > 0.0 {
+            for w in weights {
+                *w /= sum;
+            }
+        }
+    }
     Ok((Some(skeleton), all_joint_indices, all_joint_weights))
 }
 
@@ -716,8 +1035,8 @@ fn parse_hex_color(s: &str) -> Option<[f32; 4]> {
 
 /// Load a .3mf file with per-triangle colors
 fn load_3mf_with_colors(path: &PathBuf) -> Result<MeshWithColors, Box<dyn std::error::Error>> {
-    use quick_xml::events::Event;
     use quick_xml::Reader;
+    use quick_xml::events::Event;
     use std::io::Read;
 
     let file = std::fs::File::open(path)?;
@@ -805,9 +1124,7 @@ fn load_3mf_with_colors(path: &PathBuf) -> Result<MeshWithColors, Box<dyn std::e
 
                         let color = use_pid
                             .and_then(|pid| color_groups.get(pid))
-                            .and_then(|group| {
-                                use_pindex.and_then(|idx| group.get(idx).copied())
-                            });
+                            .and_then(|group| use_pindex.and_then(|idx| group.get(idx).copied()));
 
                         if let Some(c) = color {
                             has_colors = true;
@@ -833,10 +1150,7 @@ fn load_3mf_with_colors(path: &PathBuf) -> Result<MeshWithColors, Box<dyn std::e
                                 if key == "color" {
                                     let val = std::str::from_utf8(&attr.value).unwrap_or("");
                                     if let Some(rgba) = parse_hex_color(val) {
-                                        color_groups
-                                            .get_mut(group_id)
-                                            .unwrap()
-                                            .push(rgba);
+                                        color_groups.get_mut(group_id).unwrap().push(rgba);
                                     }
                                 }
                             }
@@ -893,10 +1207,14 @@ fn load_3mf_with_colors(path: &PathBuf) -> Result<MeshWithColors, Box<dyn std::e
 /// List all mesh names in a GLB/glTF file (for mesh selection UI).
 /// Returns names in document order; unnamed meshes get "<unnamed>".
 pub fn list_glb_meshes(path: &PathBuf) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let (document, _, _) = gltf::import(path)?;
+    let (document, _, _) = super::gltf_import::import(path)?;
     Ok(document
         .meshes()
-        .map(|m| m.name().unwrap_or("<unnamed>").to_string())
+        .map(|m| {
+            m.name()
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("#{}", m.index()))
+        })
         .collect())
 }
 

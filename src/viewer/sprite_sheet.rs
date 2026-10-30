@@ -5,9 +5,7 @@ use crate::mesh::animation;
 use crate::mesh::loader::load_mesh_with_colors;
 
 use super::{
-    camera::ArcBallCamera,
-    mesh_renderer::MeshRenderer,
-    render::extract_render_data,
+    camera::ArcBallCamera, mesh_renderer::MeshRenderer, render::extract_render_data,
     state::ViewerState,
 };
 
@@ -104,32 +102,43 @@ fn render_all_tiles(
     let width = config.tile_width;
     let height = config.tile_height;
 
+    let pixels = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|p| p.checked_mul(config.angles.len() as u64))
+        .and_then(|p| p.checked_mul(config.frames.len() as u64))
+        .ok_or("Sprite sheet dimensions overflow")?;
+    if width == 0
+        || height == 0
+        || width > 8192
+        || height > 8192
+        || pixels > 67_108_864
+        || config.angles.is_empty()
+        || config.frames.is_empty()
+    {
+        return Err("Sprite output must have nonempty dimensions, at most 8192 per tile axis and 64 megapixels total".into());
+    }
+
+    let mut state = ViewerState::default();
+    if config.transparent_bg {
+        state.background = super::state::Background::Solid([0.0, 0.0, 0.0, 0.0]);
+    }
+    configure_state(&mut state);
     // Load mesh
     let mut mesh_data = load_mesh_with_colors(input, mesh_name)?;
+    if let Some(path) = &state.clips_path {
+        crate::mesh::clips::attach(&mut mesh_data, path)?;
+    }
     if z_up {
         mesh_data.convert_z_up_to_y_up();
     }
 
-    // Build CornerTableF for stats
-    let mesh = mesh_data.to_corner_table()?;
-    let stats = super::state::MeshStats {
-        vertex_count: mesh.count_vertices(),
-        edge_count: mesh.unique_edges().count(),
-        face_count: mesh.count_faces(),
-        is_manifold: mesh.boundary_rings().is_empty(),
-        hole_count: mesh.boundary_rings().len(),
-    };
+    let stats = super::state::MeshStats::from_mesh(&mesh_data)?;
 
     // Extract render data
     let render_mesh = extract_render_data(&mesh_data, false);
     let max_dimension = render_mesh.max_dimension;
 
-    // Configure state
-    let mut state = ViewerState::for_mesh(max_dimension, stats);
-    if config.transparent_bg {
-        state.background = super::state::Background::Solid([0.0, 0.0, 0.0, 0.0]);
-    }
-    configure_state(&mut state);
+    state.stats = stats;
 
     // Create headless GPU device
     let (device, queue, texture_format) =
@@ -238,19 +247,20 @@ fn render_all_tiles(
                 state.base_color,
                 state.light_direction,
                 state.background,
+                state.backface_unlit,
             );
 
             // Render
-            let mut encoder =
-                device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Sprite Sheet Render Encoder"),
-                });
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Sprite Sheet Render Encoder"),
+            });
 
             mesh_renderer.render(
                 &mut encoder,
                 &render_view,
                 state.show_wireframe,
                 state.show_backfaces,
+                state.show_ground,
             );
 
             // Copy render target to readback buffer

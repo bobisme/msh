@@ -1,6 +1,7 @@
 use nalgebra::{Matrix4, Quaternion, UnitQuaternion, Vector3};
 
 /// A single joint in a skeleton hierarchy.
+#[derive(Clone)]
 pub struct Joint {
     /// Index in the skeleton's joints array (NOT the glTF node index).
     pub index: usize,
@@ -10,6 +11,8 @@ pub struct Joint {
     pub name: Option<String>,
     /// Index (in the joints array) of this joint's parent, if any.
     pub parent: Option<usize>,
+    /// Non-joint ancestor transforms between this joint and its joint parent.
+    pub parent_transform: [[f32; 4]; 4],
     /// Inverse bind matrix for this joint (column-major, as stored in glTF).
     pub inverse_bind_matrix: [[f32; 4]; 4],
     /// Local transform of this joint's node.
@@ -17,6 +20,7 @@ pub struct Joint {
 }
 
 /// Local transform for a joint node, matching glTF's two representations.
+#[derive(Clone)]
 pub enum JointTransform {
     /// Translation, rotation (quaternion xyzw), and scale.
     Decomposed {
@@ -29,6 +33,7 @@ pub enum JointTransform {
 }
 
 /// A skeleton extracted from a glTF skin.
+#[derive(Clone)]
 pub struct Skeleton {
     /// Ordered list of joints (index in this vec == joint index used in JOINTS_0).
     pub joints: Vec<Joint>,
@@ -56,9 +61,15 @@ impl JointTransform {
                 let scale = [sx, sy, sz];
                 // Extract rotation matrix (normalised columns)
                 let rot_mat = nalgebra::Matrix3::new(
-                    mat[(0, 0)] / sx, mat[(0, 1)] / sy, mat[(0, 2)] / sz,
-                    mat[(1, 0)] / sx, mat[(1, 1)] / sy, mat[(1, 2)] / sz,
-                    mat[(2, 0)] / sx, mat[(2, 1)] / sy, mat[(2, 2)] / sz,
+                    mat[(0, 0)] / sx,
+                    mat[(0, 1)] / sy,
+                    mat[(0, 2)] / sz,
+                    mat[(1, 0)] / sx,
+                    mat[(1, 1)] / sy,
+                    mat[(1, 2)] / sz,
+                    mat[(2, 0)] / sx,
+                    mat[(2, 1)] / sy,
+                    mat[(2, 2)] / sz,
                 );
                 let rot = nalgebra::Rotation3::from_matrix_unchecked(rot_mat);
                 let q = UnitQuaternion::from_rotation_matrix(&rot);
@@ -70,7 +81,7 @@ impl JointTransform {
     }
 
     /// Convert this local transform to a nalgebra Matrix4.
-    fn to_matrix4(&self) -> Matrix4<f32> {
+    pub fn to_matrix4(&self) -> Matrix4<f32> {
         match self {
             JointTransform::Decomposed {
                 translation,
@@ -90,9 +101,8 @@ impl JointTransform {
                     translation[2],
                 ));
                 let r = quat.to_homogeneous();
-                let s = Matrix4::new_nonuniform_scaling(&Vector3::new(
-                    scale[0], scale[1], scale[2],
-                ));
+                let s =
+                    Matrix4::new_nonuniform_scaling(&Vector3::new(scale[0], scale[1], scale[2]));
                 // TRS order: translate * rotate * scale
                 t * r * s
             }
@@ -107,9 +117,8 @@ impl JointTransform {
 impl Skeleton {
     /// Compute the world-space transform for every joint by walking the hierarchy root-to-leaf.
     ///
-    /// Assumes joints are stored so that each joint's parent has a lower index than the joint
-    /// itself (guaranteed by well-formed glTF files). A single forward pass over the array
-    /// is therefore sufficient to compute all world transforms.
+    /// Joint arrays need not be topologically ordered. The loader validates the node
+    /// hierarchy, and this iterative walk evaluates each parent before its child.
     pub fn compute_world_transforms(&self) -> Vec<[[f32; 4]; 4]> {
         self.compute_world_transforms_from(None)
     }
@@ -122,24 +131,29 @@ impl Skeleton {
         local_transforms: Option<&[[[f32; 4]; 4]]>,
     ) -> Vec<[[f32; 4]; 4]> {
         let n = self.joints.len();
-        let mut world: Vec<Matrix4<f32>> = Vec::with_capacity(n);
-
-        for (i, joint) in self.joints.iter().enumerate() {
-            let local = match local_transforms {
-                Some(lt) if i < lt.len() => Matrix4::from(lt[i]),
-                _ => joint.local_transform.to_matrix4(),
-            };
-
-            let world_transform = match joint.parent {
-                Some(parent_idx) => {
-                    // Parent is guaranteed to have a lower index, so it's already computed.
-                    debug_assert!(parent_idx < i, "parent index must be less than child index");
-                    world[parent_idx] * local
+        let mut world = vec![Matrix4::identity(); n];
+        let mut complete = vec![false; n];
+        for start in 0..n {
+            let mut path = Vec::new();
+            let mut cursor = Some(start);
+            while let Some(index) = cursor {
+                if complete[index] {
+                    break;
                 }
-                None => local,
-            };
-
-            world.push(world_transform);
+                assert!(path.len() < n, "Invalid cyclic skeleton hierarchy");
+                path.push(index);
+                cursor = self.joints[index].parent;
+            }
+            while let Some(index) = path.pop() {
+                let joint = &self.joints[index];
+                let local = local_transforms
+                    .and_then(|p| p.get(index))
+                    .map(|m| Matrix4::from(*m))
+                    .unwrap_or_else(|| joint.local_transform.to_matrix4());
+                let local = Matrix4::from(joint.parent_transform) * local;
+                world[index] = joint.parent.map_or(local, |parent| world[parent] * local);
+                complete[index] = true;
+            }
         }
 
         world.iter().map(|m| (*m).into()).collect()
@@ -237,6 +251,7 @@ mod tests {
             node_index: 0,
             name: Some("root".into()),
             parent: None,
+            parent_transform: Matrix4::identity().into(),
             // Inverse of identity = identity
             inverse_bind_matrix: identity(),
             local_transform: JointTransform::Decomposed {
@@ -254,6 +269,7 @@ mod tests {
             node_index: 1,
             name: Some("child".into()),
             parent: Some(0),
+            parent_transform: Matrix4::identity().into(),
             inverse_bind_matrix: translation_mat(0.0, -2.0, 0.0),
             local_transform: JointTransform::Decomposed {
                 translation: [0.0, 2.0, 0.0],
@@ -342,6 +358,7 @@ mod tests {
                 node_index: 0,
                 name: None,
                 parent: None,
+                parent_transform: Matrix4::identity().into(),
                 inverse_bind_matrix: identity(),
                 local_transform: JointTransform::Matrix(translation_mat(1.0, 2.0, 3.0)),
             }],
@@ -365,5 +382,23 @@ mod tests {
         let id = identity();
         assert_mat4_approx_eq(&joint_matrices[0], &id, 1e-6);
         assert_mat4_approx_eq(&joint_matrices[1], &id, 1e-6);
+    }
+    #[test]
+    fn arbitrary_joint_order_and_nonjoint_ancestors_are_preserved() {
+        let mut skeleton = make_two_joint_skeleton();
+        let expected = skeleton.compute_world_transforms();
+        skeleton.joints.swap(0, 1);
+        skeleton.joints[0].index = 0;
+        skeleton.joints[0].parent = Some(1);
+        skeleton.joints[1].index = 1;
+        skeleton.joints[1].parent = None;
+        assert_eq!(
+            skeleton.compute_world_transforms(),
+            vec![expected[1], expected[0]]
+        );
+        skeleton.joints[1].parent_transform =
+            Matrix4::new_translation(&Vector3::new(0.0, 10.0, 0.0)).into();
+        let actual = skeleton.compute_world_transforms();
+        assert!((actual[0][3][1] - expected[1][3][1] - 10.0).abs() < 1e-5);
     }
 }

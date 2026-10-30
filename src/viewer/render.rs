@@ -10,9 +10,8 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use crate::mesh::animation::{self, AnimationClip};
+use crate::mesh::animation;
 use crate::mesh::loader::{MeshMaterials, NO_MATERIAL, load_mesh_with_colors};
-use crate::mesh::skeleton::Skeleton;
 
 use super::{
     camera::ArcBallCamera,
@@ -22,23 +21,7 @@ use super::{
     ui_renderer::UiRenderer,
 };
 
-/// Animation playback state
-struct AnimationState {
-    /// All animation clips loaded from the mesh
-    clips: Vec<AnimationClip>,
-    /// Index of the currently active clip
-    current_clip: usize,
-    /// Current playback time in seconds
-    time: f32,
-    /// Whether the animation is playing
-    playing: bool,
-    /// Playback speed multiplier
-    speed: f32,
-    /// The skeleton used to compute joint matrices
-    skeleton: Skeleton,
-    /// Last frame instant for delta-time computation
-    last_frame: Instant,
-}
+use super::pose::PoseState as AnimationState;
 
 /// Application state for the viewer
 struct ViewerApp {
@@ -124,28 +107,19 @@ impl ViewerApp {
             mesh_data.convert_z_up_to_y_up();
         }
 
-        // Rebuild stats from CornerTable
-        let (vertex_count, edge_count, face_count, is_manifold, hole_count) =
-            match mesh_data.to_corner_table() {
-                Ok(m) => {
-                    let boundary_rings = m.boundary_rings();
-                    (
-                        m.count_vertices(),
-                        m.unique_edges().count(),
-                        m.count_faces(),
-                        boundary_rings.is_empty(),
-                        boundary_rings.len(),
-                    )
-                }
-                Err(_) => (0, 0, 0, false, 0),
-            };
+        if let Some(path) = &self.state.clips_path
+            && let Err(error) = crate::mesh::clips::attach(&mut mesh_data, path)
+        {
+            eprintln!("Failed to load clips: {error}");
+            return;
+        }
 
-        self.state.stats = MeshStats {
-            vertex_count,
-            edge_count,
-            face_count,
-            is_manifold,
-            hole_count,
+        self.state.stats = match MeshStats::from_mesh(&mesh_data) {
+            Ok(stats) => stats,
+            Err(error) => {
+                eprintln!("Failed to analyze mesh: {error}");
+                return;
+            }
         };
 
         // Extract render data
@@ -204,16 +178,23 @@ impl ApplicationHandler for ViewerApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         // Window creation and GPU initialization happens here in winit 0.30
         if self.window.is_none() {
-            let window_attributes = Window::default_attributes()
-                .with_title("Mesh Viewer - msh");
+            let mut window_attributes = Window::default_attributes().with_title(
+                self.state
+                    .window_title
+                    .as_deref()
+                    .unwrap_or("Mesh Viewer - msh"),
+            );
+            if let Some([width, height]) = self.state.window_size {
+                window_attributes =
+                    window_attributes.with_inner_size(winit::dpi::PhysicalSize::new(width, height));
+            }
             let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
             // Initialize GPU
             let size = window.inner_size();
             let vsync = self.vsync;
-            let gpu = pollster::block_on(async {
-                GpuState::new(window.clone(), vsync).await.unwrap()
-            });
+            let gpu =
+                pollster::block_on(async { GpuState::new(window.clone(), vsync).await.unwrap() });
 
             // Create camera
             let camera_distance = self.render_mesh.max_dimension * self.model_scale * 2.5;
@@ -248,6 +229,7 @@ impl ApplicationHandler for ViewerApp {
             println!("  Mouse: Rotate (drag), Zoom (scroll), Pan (right-drag)");
             println!("  W: Toggle wireframe overlay");
             println!("  B: Toggle backface visualization (red)");
+            println!("  G: Toggle ground shadow");
             println!("  U: Toggle UI overlay");
             if self.animation.is_some() {
                 println!("  Space: Play/Pause animation");
@@ -285,127 +267,143 @@ impl ApplicationHandler for ViewerApp {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state == ElementState::Pressed
-                    && let PhysicalKey::Code(keycode) = event.physical_key {
-                        match keycode {
-                            KeyCode::KeyW => {
-                                self.state.show_wireframe = !self.state.show_wireframe;
+                    && let PhysicalKey::Code(keycode) = event.physical_key
+                {
+                    match keycode {
+                        KeyCode::KeyW => {
+                            self.state.show_wireframe = !self.state.show_wireframe;
+                            println!(
+                                "Wireframe: {}",
+                                if self.state.show_wireframe {
+                                    "ON"
+                                } else {
+                                    "OFF"
+                                }
+                            );
+                        }
+                        KeyCode::KeyB => {
+                            self.state.show_backfaces = !self.state.show_backfaces;
+                            println!(
+                                "Backface visualization: {}",
+                                if self.state.show_backfaces {
+                                    "ON (red)"
+                                } else {
+                                    "OFF"
+                                }
+                            );
+                        }
+                        KeyCode::KeyU => {
+                            self.state.show_ui = !self.state.show_ui;
+                            println!(
+                                "UI overlay: {}",
+                                if self.state.show_ui { "ON" } else { "OFF" }
+                            );
+                        }
+                        KeyCode::KeyG => {
+                            self.state.show_ground = !self.state.show_ground;
+                            println!(
+                                "Ground: {}",
+                                if self.state.show_ground { "ON" } else { "OFF" }
+                            );
+                        }
+                        KeyCode::Space => {
+                            if let Some(ref mut anim) = self.animation {
+                                anim.playing = !anim.playing;
+                                if anim.playing {
+                                    // Reset the last_frame so we don't get a huge dt
+                                    anim.last_frame = Instant::now();
+                                }
                                 println!(
-                                    "Wireframe: {}",
-                                    if self.state.show_wireframe { "ON" } else { "OFF" }
+                                    "Animation: {}",
+                                    if anim.playing { "PLAYING" } else { "PAUSED" }
                                 );
+                                if let Some(window) = self.window.as_ref() {
+                                    window.request_redraw();
+                                }
                             }
-                            KeyCode::KeyB => {
-                                self.state.show_backfaces = !self.state.show_backfaces;
-                                println!(
-                                    "Backface visualization: {}",
-                                    if self.state.show_backfaces {
-                                        "ON (red)"
+                        }
+                        KeyCode::BracketLeft => {
+                            if let Some(ref mut anim) = self.animation {
+                                if !anim.clips.is_empty() {
+                                    if anim.current_clip == 0 {
+                                        anim.current_clip = anim.clips.len() - 1;
                                     } else {
-                                        "OFF"
+                                        anim.current_clip -= 1;
                                     }
-                                );
-                            }
-                            KeyCode::KeyU => {
-                                self.state.show_ui = !self.state.show_ui;
-                                println!("UI overlay: {}", if self.state.show_ui { "ON" } else { "OFF" });
-                            }
-                            KeyCode::Space => {
-                                if let Some(ref mut anim) = self.animation {
-                                    anim.playing = !anim.playing;
-                                    if anim.playing {
-                                        // Reset the last_frame so we don't get a huge dt
-                                        anim.last_frame = Instant::now();
-                                    }
+                                    anim.time = 0.0;
+                                    let clip = &anim.clips[anim.current_clip];
                                     println!(
-                                        "Animation: {}",
-                                        if anim.playing { "PLAYING" } else { "PAUSED" }
+                                        "Animation clip {}/{}: {}",
+                                        anim.current_clip + 1,
+                                        anim.clips.len(),
+                                        clip.name.as_deref().unwrap_or("<unnamed>")
                                     );
                                     if let Some(window) = self.window.as_ref() {
                                         window.request_redraw();
                                     }
                                 }
                             }
-                            KeyCode::BracketLeft => {
-                                if let Some(ref mut anim) = self.animation {
-                                    if !anim.clips.is_empty() {
-                                        if anim.current_clip == 0 {
-                                            anim.current_clip = anim.clips.len() - 1;
-                                        } else {
-                                            anim.current_clip -= 1;
-                                        }
-                                        anim.time = 0.0;
-                                        let clip = &anim.clips[anim.current_clip];
-                                        println!(
-                                            "Animation clip {}/{}: {}",
-                                            anim.current_clip + 1,
-                                            anim.clips.len(),
-                                            clip.name.as_deref().unwrap_or("<unnamed>")
-                                        );
-                                        if let Some(window) = self.window.as_ref() {
-                                            window.request_redraw();
-                                        }
+                        }
+                        KeyCode::BracketRight => {
+                            if let Some(ref mut anim) = self.animation {
+                                if !anim.clips.is_empty() {
+                                    anim.current_clip = (anim.current_clip + 1) % anim.clips.len();
+                                    anim.time = 0.0;
+                                    let clip = &anim.clips[anim.current_clip];
+                                    println!(
+                                        "Animation clip {}/{}: {}",
+                                        anim.current_clip + 1,
+                                        anim.clips.len(),
+                                        clip.name.as_deref().unwrap_or("<unnamed>")
+                                    );
+                                    if let Some(window) = self.window.as_ref() {
+                                        window.request_redraw();
                                     }
                                 }
                             }
-                            KeyCode::BracketRight => {
-                                if let Some(ref mut anim) = self.animation {
-                                    if !anim.clips.is_empty() {
-                                        anim.current_clip =
-                                            (anim.current_clip + 1) % anim.clips.len();
-                                        anim.time = 0.0;
-                                        let clip = &anim.clips[anim.current_clip];
-                                        println!(
-                                            "Animation clip {}/{}: {}",
-                                            anim.current_clip + 1,
-                                            anim.clips.len(),
-                                            clip.name.as_deref().unwrap_or("<unnamed>")
-                                        );
-                                        if let Some(window) = self.window.as_ref() {
-                                            window.request_redraw();
-                                        }
-                                    }
-                                }
-                            }
-                            KeyCode::KeyN => {
-                                if self.mesh_names.len() > 1 {
-                                    let next = (self.current_mesh_idx + 1) % self.mesh_names.len();
-                                    self.switch_to_mesh(next);
-                                }
-                            }
-                            KeyCode::KeyP => {
-                                if self.mesh_names.len() > 1 {
-                                    let prev = if self.current_mesh_idx == 0 {
-                                        self.mesh_names.len() - 1
-                                    } else {
-                                        self.current_mesh_idx - 1
-                                    };
-                                    self.switch_to_mesh(prev);
-                                }
-                            }
-                            KeyCode::KeyQ | KeyCode::Escape => {
-                                event_loop.exit();
-                            }
-                            _ => {}
                         }
-                    }
-            }
-            WindowEvent::MouseInput { state: btn_state, button, .. } => {
-                match button {
-                    MouseButton::Left => {
-                        self.mouse_pressed_left = btn_state == ElementState::Pressed;
-                        if !self.mouse_pressed_left {
-                            self.last_mouse_pos = None;
+                        KeyCode::KeyN => {
+                            if self.mesh_names.len() > 1 {
+                                let next = (self.current_mesh_idx + 1) % self.mesh_names.len();
+                                self.switch_to_mesh(next);
+                            }
                         }
-                    }
-                    MouseButton::Right => {
-                        self.mouse_pressed_right = btn_state == ElementState::Pressed;
-                        if !self.mouse_pressed_right {
-                            self.last_mouse_pos = None;
+                        KeyCode::KeyP => {
+                            if self.mesh_names.len() > 1 {
+                                let prev = if self.current_mesh_idx == 0 {
+                                    self.mesh_names.len() - 1
+                                } else {
+                                    self.current_mesh_idx - 1
+                                };
+                                self.switch_to_mesh(prev);
+                            }
                         }
+                        KeyCode::KeyQ | KeyCode::Escape => {
+                            event_loop.exit();
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
+            WindowEvent::MouseInput {
+                state: btn_state,
+                button,
+                ..
+            } => match button {
+                MouseButton::Left => {
+                    self.mouse_pressed_left = btn_state == ElementState::Pressed;
+                    if !self.mouse_pressed_left {
+                        self.last_mouse_pos = None;
+                    }
+                }
+                MouseButton::Right => {
+                    self.mouse_pressed_right = btn_state == ElementState::Pressed;
+                    if !self.mouse_pressed_right {
+                        self.last_mouse_pos = None;
+                    }
+                }
+                _ => {}
+            },
             WindowEvent::CursorMoved { position, .. } => {
                 if let Some(camera) = self.camera.as_mut() {
                     if let Some(last_pos) = self.last_mouse_pos {
@@ -450,8 +448,9 @@ impl ApplicationHandler for ViewerApp {
                     let clip = &anim.clips[anim.current_clip];
                     let local_transforms =
                         animation::evaluate_animation(clip, &anim.skeleton, anim.time);
-                    let joint_matrices =
-                        anim.skeleton.compute_joint_matrices_with_pose(&local_transforms);
+                    let joint_matrices = anim
+                        .skeleton
+                        .compute_joint_matrices_with_pose(&local_transforms);
 
                     if let (Some(gpu), Some(mesh_renderer)) =
                         (self.gpu.as_ref(), self.mesh_renderer.as_ref())
@@ -460,7 +459,13 @@ impl ApplicationHandler for ViewerApp {
                     }
                 }
 
-                if let (Some(window), Some(gpu), Some(camera), Some(mesh_renderer), Some(ui_renderer)) = (
+                if let (
+                    Some(window),
+                    Some(gpu),
+                    Some(camera),
+                    Some(mesh_renderer),
+                    Some(ui_renderer),
+                ) = (
                     self.window.as_ref(),
                     self.gpu.as_mut(),
                     self.camera.as_ref(),
@@ -479,6 +484,7 @@ impl ApplicationHandler for ViewerApp {
                         self.state.base_color,
                         self.state.light_direction,
                         self.state.background,
+                        self.state.backface_unlit,
                     );
 
                     // Queue UI text
@@ -503,7 +509,14 @@ impl ApplicationHandler for ViewerApp {
                         } else {
                             None
                         };
-                        ui_renderer.queue_text(&gpu.device, &gpu.queue, &self.state, false, anim_info.as_ref(), mesh_info.as_ref());
+                        ui_renderer.queue_text(
+                            &gpu.device,
+                            &gpu.queue,
+                            &self.state,
+                            false,
+                            anim_info.as_ref(),
+                            mesh_info.as_ref(),
+                        );
                     }
 
                     // Render
@@ -514,11 +527,11 @@ impl ApplicationHandler for ViewerApp {
                                 .texture
                                 .create_view(&wgpu::TextureViewDescriptor::default());
 
-                            let mut encoder = gpu
-                                .device
-                                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            let mut encoder = gpu.device.create_command_encoder(
+                                &wgpu::CommandEncoderDescriptor {
                                     label: Some("Render Encoder"),
-                                });
+                                },
+                            );
 
                             // Render mesh
                             mesh_renderer.render(
@@ -526,6 +539,7 @@ impl ApplicationHandler for ViewerApp {
                                 &view,
                                 self.state.show_wireframe,
                                 self.state.show_backfaces,
+                                self.state.show_ground,
                             );
 
                             // Render UI
@@ -561,6 +575,7 @@ impl ApplicationHandler for ViewerApp {
 pub struct SkeletonRenderData {
     /// Joint matrices for GPU skinning (world * inverse_bind per joint)
     pub joint_matrices: Vec<[[f32; 4]; 4]>,
+    pub center: [f32; 3],
 }
 
 /// CPU-side render data for a mesh: a triangle soup whose faces are grouped by material
@@ -573,6 +588,7 @@ pub struct RenderMesh {
     pub has_vertex_colors: bool,
     pub max_dimension: f32,
     pub skeleton_data: Option<SkeletonRenderData>,
+    pub ground_bounds: Option<super::ground::GroundBounds>,
 }
 
 /// Extract rendering data from MeshWithColors
@@ -586,10 +602,19 @@ pub fn extract_render_data(
     let has_tangents = !mesh_data.tangents.is_empty();
     let default_color = [0.0f32; 4];
 
+    let has_joints = !mesh_data.joint_indices.is_empty() && !mesh_data.joint_weights.is_empty();
+    let bind_matrices = mesh_data
+        .skeleton
+        .as_ref()
+        .map(|s| s.compute_joint_matrices());
+    // Bound the actual bind-pose geometry, including quantization encoded in inverse
+    // binds. Animated source positions stay in skin space; centering happens after skinning.
+    let bind_positions = mesh_data.bind_positions();
+
     // Calculate bounding box
     let mut min = [f32::INFINITY; 3];
     let mut max = [f32::NEG_INFINITY; 3];
-    for pos in &mesh_data.positions {
+    for pos in &bind_positions {
         for i in 0..3 {
             min[i] = min[i].min(pos[i]);
             max[i] = max[i].max(pos[i]);
@@ -618,7 +643,6 @@ pub fn extract_render_data(
     face_order.sort_by_key(|&f| face_material(f).unwrap_or(usize::MAX));
 
     // Build triangle soup with per-vertex colors, UVs, normals, and joint data
-    let has_joints = !mesh_data.joint_indices.is_empty() && !mesh_data.joint_weights.is_empty();
     let mut vertices = Vec::with_capacity(mesh_data.face_indices.len() * 3);
     let mut indices = Vec::with_capacity(mesh_data.face_indices.len() * 3);
     let mut batches: Vec<DrawBatch> = Vec::new();
@@ -649,17 +673,37 @@ pub fn extract_render_data(
             } else {
                 [0.0, 0.0]
             };
-            let normal = if has_normals { mesh_data.normals[vi as usize] } else { [0.0; 3] };
-            let tangent = if has_tangents { mesh_data.tangents[vi as usize] } else { [0.0; 4] };
+            let normal = if has_normals {
+                mesh_data.normals[vi as usize]
+            } else {
+                [0.0; 3]
+            };
+            let tangent = if has_tangents {
+                mesh_data.tangents[vi as usize]
+            } else {
+                [0.0; 4]
+            };
             let (ji, jw) = if has_joints {
                 let src_ji = mesh_data.joint_indices[vi as usize];
                 let src_jw = mesh_data.joint_weights[vi as usize];
-                ([src_ji[0] as u32, src_ji[1] as u32, src_ji[2] as u32, src_ji[3] as u32], src_jw)
+                (
+                    [
+                        src_ji[0] as u32,
+                        src_ji[1] as u32,
+                        src_ji[2] as u32,
+                        src_ji[3] as u32,
+                    ],
+                    src_jw,
+                )
             } else {
                 ([0u32; 4], [0.0f32; 4])
             };
             vertices.push(Vertex {
-                position: [pos[0] - center[0], pos[1] - center[1], pos[2] - center[2]],
+                position: if jw.iter().any(|&w| w > 0.0) {
+                    pos
+                } else {
+                    [pos[0] - center[0], pos[1] - center[1], pos[2] - center[2]]
+                },
                 color,
                 texcoord: uv,
                 joint_indices: ji,
@@ -680,12 +724,15 @@ pub fn extract_render_data(
         backface_indices.push(indices[i + 1]);
     }
 
-    // Compute bind-pose joint matrices if skeleton is present
-    let skeleton_data = mesh_data.skeleton.as_ref().map(|skeleton| {
-        SkeletonRenderData {
-            joint_matrices: skeleton.compute_joint_matrices(),
-        }
+    let skeleton_data = bind_matrices.map(|joint_matrices| SkeletonRenderData {
+        joint_matrices,
+        center,
     });
+    let ground_bounds = super::ground::GroundBounds::from_positions(
+        bind_positions
+            .iter()
+            .map(|p| [p[0] - center[0], p[1] - center[1], p[2] - center[2]]),
+    );
 
     RenderMesh {
         vertices,
@@ -695,6 +742,7 @@ pub fn extract_render_data(
         has_vertex_colors,
         max_dimension,
         skeleton_data,
+        ground_bounds,
     }
 }
 
@@ -709,6 +757,8 @@ pub fn view_mesh_with_bvh(
     no_center: bool,
     configure_state: impl FnOnce(&mut ViewerState),
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let mut state = ViewerState::default();
+    configure_state(&mut state);
     println!("Loading mesh from {:?}...", input);
 
     // If the input is a GLB, enumerate its meshes so we can switch between them.
@@ -727,13 +777,18 @@ pub fn view_mesh_with_bvh(
     // Resolve which mesh to load initially.
     let (resolved_mesh_name, current_mesh_idx) = if mesh_names.is_empty() {
         (mesh_name.map(String::from), 0)
+    } else if mesh_name == Some("all") {
+        (Some("all".to_string()), 0)
     } else if let Some(name) = mesh_name {
         let idx = mesh_names.iter().position(|n| n == name).unwrap_or(0);
         (Some(name.to_string()), idx)
     } else {
         // No --mesh given: default to first, and if there are multiple, print the list.
         if mesh_names.len() > 1 {
-            println!("GLB contains {} meshes (use N/P to switch):", mesh_names.len());
+            println!(
+                "GLB contains {} meshes (use N/P to switch):",
+                mesh_names.len()
+            );
             for (i, name) in mesh_names.iter().enumerate() {
                 println!("  [{}] {}", i, name);
             }
@@ -743,6 +798,10 @@ pub fn view_mesh_with_bvh(
 
     // Load mesh with color data
     let mut mesh_data = load_mesh_with_colors(input, resolved_mesh_name.as_deref())?;
+
+    if let Some(path) = &state.clips_path {
+        crate::mesh::clips::attach(&mut mesh_data, path)?;
+    }
 
     // If a BVH file was provided, parse it and map onto the skeleton
     if let Some(bvh_file) = bvh_path {
@@ -759,10 +818,12 @@ pub fn view_mesh_with_bvh(
                 bvh_clip.duration()
             );
 
-            let joint_mapping = crate::mesh::bvh_mapping::match_bvh_to_skeleton(&bvh_clip, skeleton)
-                .map_err(|e| format!("BVH skeleton matching failed: {}", e))?;
+            let joint_mapping =
+                crate::mesh::bvh_mapping::match_bvh_to_skeleton(&bvh_clip, skeleton)
+                    .map_err(|e| format!("BVH skeleton matching failed: {}", e))?;
 
-            let anim_clip = crate::mesh::bvh_mapping::bvh_to_animation_clip(&bvh_clip, &joint_mapping);
+            let anim_clip =
+                crate::mesh::bvh_mapping::bvh_to_animation_clip(&bvh_clip, &joint_mapping);
             println!(
                 "Converted BVH to animation clip: {} channels, {:.2}s duration",
                 anim_clip.channels.len(),
@@ -779,21 +840,7 @@ pub fn view_mesh_with_bvh(
         println!("Converted Z-up to Y-up");
     }
 
-    // Build CornerTableF for stats
-    let mesh = mesh_data.to_corner_table()?;
-    let vertex_count = mesh.count_vertices();
-    let face_count = mesh.count_faces();
-    let edge_count = mesh.unique_edges().count();
-    let boundary_rings = mesh.boundary_rings();
-    let is_manifold = boundary_rings.is_empty();
-
-    let stats = MeshStats {
-        vertex_count,
-        edge_count,
-        face_count,
-        is_manifold,
-        hole_count: boundary_rings.len(),
-    };
+    let stats = MeshStats::from_mesh(&mesh_data)?;
 
     // Extract rendering data
     let render_mesh = extract_render_data(&mesh_data, no_center);
@@ -803,7 +850,11 @@ pub fn view_mesh_with_bvh(
         "Extracted {} vertices ({} triangles) as triangle soup{}{}",
         render_mesh.vertices.len(),
         render_mesh.indices.len() / 3,
-        if render_mesh.has_vertex_colors { " with material colors" } else { "" },
+        if render_mesh.has_vertex_colors {
+            " with material colors"
+        } else {
+            ""
+        },
         if materials.materials.is_empty() {
             String::new()
         } else {
@@ -817,8 +868,7 @@ pub fn view_mesh_with_bvh(
     );
 
     // Create viewer state
-    let mut state = ViewerState::for_mesh(render_mesh.max_dimension, stats);
-    configure_state(&mut state);
+    state.stats = stats;
 
     // Create animation state if skeleton and animations are present
     let animation = if !mesh_data.animations.is_empty() && mesh_data.skeleton.is_some() {
@@ -841,12 +891,20 @@ pub fn view_mesh_with_bvh(
         // Resolve initial clip selection
         let initial_clip = if let Some(sel) = initial_animation {
             if let Ok(idx) = sel.parse::<usize>() {
-                if idx < clips.len() { idx } else {
-                    eprintln!("Animation index {} out of range (0-{})", idx, clips.len() - 1);
+                if idx < clips.len() {
+                    idx
+                } else {
+                    eprintln!(
+                        "Animation index {} out of range (0-{})",
+                        idx,
+                        clips.len() - 1
+                    );
                     0
                 }
             } else {
-                clips.iter().position(|c| c.name.as_deref() == Some(sel))
+                clips
+                    .iter()
+                    .position(|c| c.name.as_deref() == Some(sel))
                     .unwrap_or_else(|| {
                         eprintln!("Animation '{}' not found, using first clip", sel);
                         0
@@ -884,7 +942,11 @@ pub fn view_mesh_with_bvh(
         animation,
         model_scale.unwrap_or(1.0),
         input.clone(),
-        mesh_names,
+        if mesh_name == Some("all") {
+            Vec::new()
+        } else {
+            mesh_names
+        },
         current_mesh_idx,
         z_up,
         no_center,
@@ -912,8 +974,16 @@ mod tests {
         assert_eq!(
             render_mesh.batches,
             vec![
-                DrawBatch { first_index: 0, index_count: 3, material: Some(0) },
-                DrawBatch { first_index: 3, index_count: 3, material: Some(1) },
+                DrawBatch {
+                    first_index: 0,
+                    index_count: 3,
+                    material: Some(0)
+                },
+                DrawBatch {
+                    first_index: 3,
+                    index_count: 3,
+                    material: Some(1)
+                },
             ]
         );
     }
@@ -939,9 +1009,21 @@ mod tests {
         assert_eq!(
             render_mesh.batches,
             vec![
-                DrawBatch { first_index: 0, index_count: 3, material: Some(0) },
-                DrawBatch { first_index: 3, index_count: 6, material: Some(1) },
-                DrawBatch { first_index: 9, index_count: 3, material: None },
+                DrawBatch {
+                    first_index: 0,
+                    index_count: 3,
+                    material: Some(0)
+                },
+                DrawBatch {
+                    first_index: 3,
+                    index_count: 6,
+                    material: Some(1)
+                },
+                DrawBatch {
+                    first_index: 9,
+                    index_count: 3,
+                    material: None
+                },
             ]
         );
         assert_eq!(render_mesh.indices.len(), 12);

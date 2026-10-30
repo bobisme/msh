@@ -5,9 +5,7 @@ use crate::mesh::animation;
 use crate::mesh::loader::load_mesh_with_colors;
 
 use super::{
-    camera::ArcBallCamera,
-    mesh_renderer::MeshRenderer,
-    render::extract_render_data,
+    camera::ArcBallCamera, mesh_renderer::MeshRenderer, render::extract_render_data,
     state::ViewerState,
 };
 
@@ -28,30 +26,25 @@ pub fn render_to_file(
     no_center: bool,
     configure_state: impl FnOnce(&mut ViewerState),
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let mut state = ViewerState::default();
+    configure_state(&mut state);
     // Load mesh
     let mut mesh_data = load_mesh_with_colors(input, mesh_name)?;
+    if let Some(path) = &state.clips_path {
+        crate::mesh::clips::attach(&mut mesh_data, path)?;
+    }
 
     if z_up {
         mesh_data.convert_z_up_to_y_up();
     }
 
-    // Build CornerTableF for stats
-    let mesh = mesh_data.to_corner_table()?;
-    let stats = super::state::MeshStats {
-        vertex_count: mesh.count_vertices(),
-        edge_count: mesh.unique_edges().count(),
-        face_count: mesh.count_faces(),
-        is_manifold: mesh.boundary_rings().is_empty(),
-        hole_count: mesh.boundary_rings().len(),
-    };
+    let stats = super::state::MeshStats::from_mesh(&mesh_data)?;
 
     // Extract render data
     let render_mesh = extract_render_data(&mesh_data, no_center);
     let max_dimension = render_mesh.max_dimension;
 
-    // Configure state
-    let mut state = ViewerState::for_mesh(max_dimension, stats);
-    configure_state(&mut state);
+    state.stats = stats;
 
     // Create headless GPU device
     let (device, queue, texture_format) = pollster::block_on(create_headless_device())?;
@@ -118,6 +111,7 @@ pub fn render_to_file(
         state.base_color,
         state.light_direction,
         state.background,
+        state.backface_unlit,
     );
 
     // Create offscreen render target
@@ -147,6 +141,7 @@ pub fn render_to_file(
         &render_view,
         state.show_wireframe,
         state.show_backfaces,
+        state.show_ground,
     );
 
     // Read back texture to buffer
@@ -210,24 +205,20 @@ pub fn render_to_file(
 
     // Create parent directories if needed
     if let Some(parent) = std::path::Path::new(output).parent()
-        && !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
 
     // Save PNG
-    image::save_buffer(
-        output,
-        &img_data,
-        width,
-        height,
-        image::ColorType::Rgba8,
-    )?;
+    image::save_buffer(output, &img_data, width, height, image::ColorType::Rgba8)?;
 
     Ok(())
 }
 
 /// Create a headless wgpu device (no window surface)
-pub async fn create_headless_device() -> Result<(wgpu::Device, wgpu::Queue, wgpu::TextureFormat), Box<dyn std::error::Error>> {
+pub async fn create_headless_device()
+-> Result<(wgpu::Device, wgpu::Queue, wgpu::TextureFormat), Box<dyn std::error::Error>> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
         backends: wgpu::Backends::VULKAN,
         ..Default::default()

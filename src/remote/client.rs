@@ -6,11 +6,12 @@ use jsonrpsee::core::params::ArrayParams;
 use jsonrpsee::http_client::{HttpClient, HttpClientBuilder};
 
 #[cfg(feature = "remote")]
-use crate::rpc::types::MeshStatsResponse;
+use crate::rpc::types::{MeshStatsResponse, ScreenshotResponse};
 
 #[cfg(feature = "remote")]
 pub async fn create_client(url: &str) -> Result<HttpClient, Box<dyn std::error::Error>> {
     let client = HttpClientBuilder::default()
+        .request_timeout(std::time::Duration::from_secs(65))
         .build(url)?;
     Ok(client)
 }
@@ -20,9 +21,11 @@ pub async fn load_model(
     client: &HttpClient,
     path: String,
     mesh_name: Option<String>,
-) -> Result<String, Box<dyn std::error::Error>> {
-    let response: String = client
-        .request("load_model", (path, mesh_name))
+    keep_camera: bool,
+    clips: Option<String>,
+) -> Result<MeshStatsResponse, Box<dyn std::error::Error>> {
+    let response: MeshStatsResponse = client
+        .request("load_model", (path, mesh_name, keep_camera, clips))
         .await?;
     Ok(response)
 }
@@ -34,9 +37,7 @@ pub async fn set_rotation(
     y: f32,
     z: f32,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let response: String = client
-        .request("set_rotation", (x, y, z))
-        .await?;
+    let response: String = client.request("set_rotation", (x, y, z)).await?;
     Ok(response)
 }
 
@@ -46,9 +47,7 @@ pub async fn rotate_around_axis(
     axis: Vec<f32>,
     angle: String,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let response: String = client
-        .request("rotate_around_axis", (axis, angle))
-        .await?;
+    let response: String = client.request("rotate_around_axis", (axis, angle)).await?;
     Ok(response)
 }
 
@@ -59,9 +58,7 @@ pub async fn set_camera_position(
     y: f32,
     z: f32,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let response: String = client
-        .request("set_camera_position", (x, y, z))
-        .await?;
+    let response: String = client.request("set_camera_position", (x, y, z)).await?;
     Ok(response)
 }
 
@@ -72,9 +69,7 @@ pub async fn set_camera_target(
     y: f32,
     z: f32,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let response: String = client
-        .request("set_camera_target", (x, y, z))
-        .await?;
+    let response: String = client.request("set_camera_target", (x, y, z)).await?;
     Ok(response)
 }
 
@@ -128,33 +123,27 @@ pub async fn toggle_backfaces(client: &HttpClient) -> Result<String, Box<dyn std
 
 #[cfg(feature = "remote")]
 pub async fn enable_ui(client: &HttpClient) -> Result<String, Box<dyn std::error::Error>> {
-    let response: String = client
-        .request("enable_ui", ArrayParams::new())
-        .await?;
+    let response: String = client.request("enable_ui", ArrayParams::new()).await?;
     Ok(response)
 }
 
 #[cfg(feature = "remote")]
 pub async fn disable_ui(client: &HttpClient) -> Result<String, Box<dyn std::error::Error>> {
-    let response: String = client
-        .request("disable_ui", ArrayParams::new())
-        .await?;
+    let response: String = client.request("disable_ui", ArrayParams::new()).await?;
     Ok(response)
 }
 
 #[cfg(feature = "remote")]
 pub async fn toggle_ui(client: &HttpClient) -> Result<String, Box<dyn std::error::Error>> {
-    let response: String = client
-        .request("toggle_ui", ArrayParams::new())
-        .await?;
+    let response: String = client.request("toggle_ui", ArrayParams::new()).await?;
     Ok(response)
 }
 
 #[cfg(feature = "remote")]
-pub async fn get_stats(client: &HttpClient) -> Result<MeshStatsResponse, Box<dyn std::error::Error>> {
-    let response: MeshStatsResponse = client
-        .request("get_stats", ArrayParams::new())
-        .await?;
+pub async fn get_stats(
+    client: &HttpClient,
+) -> Result<MeshStatsResponse, Box<dyn std::error::Error>> {
+    let response: MeshStatsResponse = client.request("get_stats", ArrayParams::new()).await?;
     Ok(response)
 }
 
@@ -163,9 +152,7 @@ pub async fn capture_frame(
     client: &HttpClient,
     path: Option<String>,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let response: String = client
-        .request("capture_frame", (path,))
-        .await?;
+    let response: String = client.request("capture_frame", (path,)).await?;
     Ok(response)
 }
 
@@ -173,10 +160,8 @@ pub async fn capture_frame(
 pub async fn screenshot(
     client: &HttpClient,
     path: String,
-) -> Result<String, Box<dyn std::error::Error>> {
-    let response: String = client
-        .request("screenshot", (path,))
-        .await?;
+) -> Result<ScreenshotResponse, Box<dyn std::error::Error>> {
+    let response: ScreenshotResponse = client.request("screenshot", (path,)).await?;
     Ok(response)
 }
 
@@ -186,9 +171,7 @@ pub async fn set_projection(
     mode: String,
     value: Option<f32>,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let response: String = client
-        .request("set_projection", (mode, value))
-        .await?;
+    let response: String = client.request("set_projection", (mode, value)).await?;
     Ok(response)
 }
 
@@ -200,9 +183,7 @@ pub async fn set_clear_color(
     b: f32,
     a: f32,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let response: String = client
-        .request("set_clear_color", (r, g, b, a))
-        .await?;
+    let response: String = client.request("set_clear_color", (r, g, b, a)).await?;
     Ok(response)
 }
 
@@ -211,9 +192,7 @@ pub async fn set_shading(
     client: &HttpClient,
     mode: String,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let response: String = client
-        .request("set_shading", (mode,))
-        .await?;
+    let response: String = client.request("set_shading", (mode,)).await?;
     Ok(response)
 }
 
@@ -225,9 +204,7 @@ pub async fn set_base_color(
     b: f32,
     a: f32,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let response: String = client
-        .request("set_base_color", (r, g, b, a))
-        .await?;
+    let response: String = client.request("set_base_color", (r, g, b, a)).await?;
     Ok(response)
 }
 
@@ -238,9 +215,7 @@ pub async fn set_light_direction(
     y: f32,
     z: f32,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let response: String = client
-        .request("set_light_direction", (x, y, z))
-        .await?;
+    let response: String = client.request("set_light_direction", (x, y, z)).await?;
     Ok(response)
 }
 
@@ -249,16 +224,23 @@ pub async fn apply_preset(
     client: &HttpClient,
     name: String,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let response: String = client
-        .request("apply_preset", (name,))
-        .await?;
+    let response: String = client.request("apply_preset", (name,)).await?;
     Ok(response)
 }
 
 #[cfg(feature = "remote")]
 pub async fn quit(client: &HttpClient) -> Result<String, Box<dyn std::error::Error>> {
-    let response: String = client
-        .request("quit", ArrayParams::new())
-        .await?;
+    let response: String = client.request("quit", ArrayParams::new()).await?;
     Ok(response)
+}
+
+#[cfg(feature = "remote")]
+pub async fn set_camera(
+    client: &HttpClient,
+    eye: [f32; 3],
+    target: [f32; 3],
+    up: Option<[f32; 3]>,
+    fov: Option<f32>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    Ok(client.request("set_camera", (eye, target, up, fov)).await?)
 }

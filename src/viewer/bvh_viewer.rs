@@ -57,16 +57,14 @@ fn compute_bvh_world_positions(clip: &BvhClip, frame: usize) -> Vec<[f32; 3]> {
 
             // Rotation
             let quat = euler_to_quat(&joint.channels, values);
-            let uq = UnitQuaternion::new_normalize(Quaternion::new(
-                quat[3], quat[0], quat[1], quat[2],
-            ));
+            let uq =
+                UnitQuaternion::new_normalize(Quaternion::new(quat[3], quat[0], quat[1], quat[2]));
             local_rotation = uq.to_homogeneous();
 
             // Translation (typically only root has position channels)
             if let Some(trans) = extract_translation(&joint.channels, values) {
-                local_translation = Matrix4::new_translation(&Vector3::new(
-                    trans[0], trans[1], trans[2],
-                ));
+                local_translation =
+                    Matrix4::new_translation(&Vector3::new(trans[0], trans[1], trans[2]));
             } else {
                 local_translation = Matrix4::identity();
             }
@@ -103,11 +101,7 @@ fn compute_bvh_world_positions_interpolated(clip: &BvhClip, time: f32) -> Vec<[f
     }
 
     let duration = clip.duration();
-    let t = if duration > 0.0 {
-        time % duration
-    } else {
-        0.0
-    };
+    let t = if duration > 0.0 { time % duration } else { 0.0 };
 
     let frame_f = t / clip.frame_time;
     let frame0 = (frame_f as usize).min(clip.frame_count - 1);
@@ -142,10 +136,7 @@ fn compute_bvh_world_positions_interpolated(clip: &BvhClip, time: f32) -> Vec<[f
 /// Each bone (parent->child edge) becomes an 8-triangle octahedron.
 /// Joint positions at endpoints get small crosshair markers.
 /// Bone width and marker size auto-scale to the skeleton's bounding box.
-fn generate_bone_mesh(
-    clip: &BvhClip,
-    positions: &[[f32; 3]],
-) -> (Vec<Vertex>, Vec<u32>) {
+fn generate_bone_mesh(clip: &BvhClip, positions: &[[f32; 3]]) -> (Vec<Vertex>, Vec<u32>) {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
 
@@ -158,7 +149,8 @@ fn generate_bone_mesh(
             max[i] = max[i].max(p[i]);
         }
     }
-    let extent = ((max[0] - min[0]).powi(2) + (max[1] - min[1]).powi(2) + (max[2] - min[2]).powi(2)).sqrt();
+    let extent =
+        ((max[0] - min[0]).powi(2) + (max[1] - min[1]).powi(2) + (max[2] - min[2]).powi(2)).sqrt();
     let scale = (extent * 0.008).max(0.001); // bone width scale factor
     let marker_size = scale * 1.5;
 
@@ -242,12 +234,12 @@ fn add_octahedron_bone_scaled(
     };
 
     // 6 vertices: parent, 4 mid points, child
-    vertices.push(mk_vertex(p));  // 0 = parent
+    vertices.push(mk_vertex(p)); // 0 = parent
     vertices.push(mk_vertex(m0)); // 1
     vertices.push(mk_vertex(m1)); // 2
     vertices.push(mk_vertex(m2)); // 3
     vertices.push(mk_vertex(m3)); // 4
-    vertices.push(mk_vertex(c));  // 5 = child
+    vertices.push(mk_vertex(c)); // 5 = child
 
     // 8 triangles (from parent to mid ring, from mid ring to child)
     // Parent -> mid ring
@@ -287,11 +279,11 @@ fn add_joint_marker(
     };
 
     // 6 vertices of a small octahedron
-    vertices.push(mk_vertex(p + Vector3::new(size, 0.0, 0.0)));  // 0 +X
+    vertices.push(mk_vertex(p + Vector3::new(size, 0.0, 0.0))); // 0 +X
     vertices.push(mk_vertex(p + Vector3::new(-size, 0.0, 0.0))); // 1 -X
-    vertices.push(mk_vertex(p + Vector3::new(0.0, size, 0.0)));  // 2 +Y
+    vertices.push(mk_vertex(p + Vector3::new(0.0, size, 0.0))); // 2 +Y
     vertices.push(mk_vertex(p + Vector3::new(0.0, -size, 0.0))); // 3 -Y
-    vertices.push(mk_vertex(p + Vector3::new(0.0, 0.0, size)));  // 4 +Z
+    vertices.push(mk_vertex(p + Vector3::new(0.0, 0.0, size))); // 4 +Z
     vertices.push(mk_vertex(p + Vector3::new(0.0, 0.0, -size))); // 5 -Z
 
     // 8 triangles
@@ -358,14 +350,21 @@ impl BvhViewerApp {
             vsync,
         }
     }
-
 }
 
 impl ApplicationHandler for BvhViewerApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
-            let window_attributes = Window::default_attributes()
-                .with_title("BVH Skeleton Viewer - msh");
+            let mut window_attributes = Window::default_attributes().with_title(
+                self.state
+                    .window_title
+                    .as_deref()
+                    .unwrap_or("BVH Skeleton Viewer - msh"),
+            );
+            if let Some([width, height]) = self.state.window_size {
+                window_attributes =
+                    window_attributes.with_inner_size(winit::dpi::PhysicalSize::new(width, height));
+            }
             let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
             let gpu = pollster::block_on(async {
@@ -427,6 +426,7 @@ impl ApplicationHandler for BvhViewerApp {
             println!("  Mouse: Rotate (drag), Zoom (scroll), Pan (right-drag)");
             println!("  Space: Play/Pause animation");
             println!("  W: Toggle wireframe overlay");
+            println!("  G: Toggle ground shadow");
             println!("  U: Toggle UI overlay");
             println!("  Q/ESC: Exit");
         }
@@ -465,6 +465,9 @@ impl ApplicationHandler for BvhViewerApp {
                         }
                         KeyCode::KeyU => {
                             self.state.show_ui = !self.state.show_ui;
+                        }
+                        KeyCode::KeyG => {
+                            self.state.show_ground = !self.state.show_ground;
                         }
                         KeyCode::Space => {
                             self.playing = !self.playing;
@@ -542,10 +545,8 @@ impl ApplicationHandler for BvhViewerApp {
                 self.last_frame = now;
 
                 // Recompute bone positions and regenerate mesh
-                let positions =
-                    compute_bvh_world_positions_interpolated(&self.clip, self.time);
-                let (new_vertices, new_indices) =
-                    generate_bone_mesh(&self.clip, &positions);
+                let positions = compute_bvh_world_positions_interpolated(&self.clip, self.time);
+                let (new_vertices, new_indices) = generate_bone_mesh(&self.clip, &positions);
 
                 // Also regenerate backface indices
                 let mut new_backface_indices = Vec::with_capacity(new_indices.len());
@@ -593,6 +594,7 @@ impl ApplicationHandler for BvhViewerApp {
                         self.state.base_color,
                         self.state.light_direction,
                         self.state.background,
+                        self.state.backface_unlit,
                     );
 
                     // Queue UI text
@@ -622,17 +624,18 @@ impl ApplicationHandler for BvhViewerApp {
                                 .texture
                                 .create_view(&wgpu::TextureViewDescriptor::default());
 
-                            let mut encoder = gpu
-                                .device
-                                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            let mut encoder = gpu.device.create_command_encoder(
+                                &wgpu::CommandEncoderDescriptor {
                                     label: Some("BVH Render Encoder"),
-                                });
+                                },
+                            );
 
                             mesh_renderer.render(
                                 &mut encoder,
                                 &view,
                                 self.state.show_wireframe,
                                 false, // no backface viz for skeleton
+                                self.state.show_ground,
                             );
 
                             if self.state.show_ui {
@@ -719,8 +722,8 @@ pub fn view_bvh(
     configure_state: impl FnOnce(&mut ViewerState),
 ) -> Result<(), Box<dyn std::error::Error>> {
     let contents = std::fs::read_to_string(path)?;
-    let clip = crate::mesh::bvh::parse_bvh(&contents)
-        .map_err(|e| format!("BVH parse error: {}", e))?;
+    let clip =
+        crate::mesh::bvh::parse_bvh(&contents).map_err(|e| format!("BVH parse error: {}", e))?;
 
     let real_joints = clip.joints.iter().filter(|j| !j.is_end_site).count();
     println!(
@@ -740,6 +743,7 @@ pub fn view_bvh(
         face_count: 0,
         is_manifold: false,
         hole_count: 0,
+        topology: None,
     };
     let mut state = ViewerState::for_mesh(max_dimension, stats);
     // Use unlit shading for the skeleton — we have vertex colors and don't need lighting artifacts

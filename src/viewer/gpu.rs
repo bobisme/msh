@@ -62,7 +62,7 @@ impl GpuState {
         let present_mode = if vsync {
             wgpu::PresentMode::Fifo // Vsync on
         } else {
-            wgpu::PresentMode::Immediate // Vsync off
+            wgpu::PresentMode::AutoNoVsync // Select a supported unsynchronized mode, or fall back
         };
 
         let config = wgpu::SurfaceConfiguration {
@@ -97,85 +97,11 @@ impl GpuState {
     }
 
     /// Capture a screenshot from a rendered texture
-    pub fn screenshot_from_texture(&self, texture: &wgpu::Texture, path: &str) -> Result<(), Box<dyn std::error::Error>> {
-        // Create buffer to read texture data
-        let bytes_per_pixel = 4; // RGBA
-        let unpadded_bytes_per_row = self.config.width * bytes_per_pixel;
-        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let padded_bytes_per_row =
-            unpadded_bytes_per_row.div_ceil(align) * align;
-
-        let buffer_size = (padded_bytes_per_row * self.config.height) as u64;
-        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("screenshot_buffer"),
-            size: buffer_size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-
-        // Copy texture to buffer
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("screenshot_encoder"),
-            });
-
-        encoder.copy_texture_to_buffer(
-            texture.as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padded_bytes_per_row),
-                    rows_per_image: Some(self.config.height),
-                },
-            },
-            wgpu::Extent3d {
-                width: self.config.width,
-                height: self.config.height,
-                depth_or_array_layers: 1,
-            },
-        );
-
-        self.queue.submit(Some(encoder.finish()));
-
-        // Read buffer and save to file
-        let buffer_slice = buffer.slice(..);
-        let (sender, receiver) = std::sync::mpsc::channel();
-        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-            sender.send(result).unwrap();
-        });
-        self.device.poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: None,
-        }).unwrap();
-        receiver.recv().unwrap().unwrap();
-
-        let data = buffer_slice.get_mapped_range();
-
-        // Convert to image
-        let mut img_data = Vec::with_capacity((self.config.width * self.config.height * 4) as usize);
-        for row in 0..self.config.height {
-            let start = (row * padded_bytes_per_row) as usize;
-            let end = start + (self.config.width * bytes_per_pixel) as usize;
-            img_data.extend_from_slice(&data[start..end]);
-        }
-
-        // Create parent directories if needed
-        if let Some(parent) = std::path::Path::new(path).parent()
-            && !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
-
-        // Save as PNG
-        image::save_buffer(
-            path,
-            &img_data,
-            self.config.width,
-            self.config.height,
-            image::ColorType::Rgba8,
-        )?;
-
-        Ok(())
+    pub fn screenshot_from_texture(
+        &self,
+        texture: &wgpu::Texture,
+        path: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        super::readback::save_png(&self.device, &self.queue, texture, path)
     }
 }

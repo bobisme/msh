@@ -1,18 +1,36 @@
 # Changelog
 
-## [Unreleased]
+## [0.8.0] - 2026-10-30
 
 ### Fixed
+- RPC screenshots are ordered render barriers and return only after PNG completion; concurrent requests no longer overwrite one another. Failed loads preserve the previous scene.
+- `--no-vsync` selects a supported present mode; native PNG readback correctly converts BGRA to RGBA.
+- Alpha cutouts apply to backface diagnostics, including authored alpha with viewer color overrides.
+- Static angle-only sprite sheets no longer require animation clips. Camera updates preserve orbit angles and exact pole views.
+- Skinning is centered after deformation, and bind-pose bounds account for dequantization in inverse bind matrices. Arbitrary joint order and non-joint ancestors are preserved.
 - **Per-primitive glTF materials** (bn-uhc): each primitive is drawn as its own batch with its own material instead of every primitive using the first `baseColorTexture`. Applies to `view`, `view --remote`, `render`, and sprite sheets.
 - `doubleSided` materials are no longer back-face culled; `alphaMode` `MASK` (with `alphaCutoff`) and `BLEND` are honored, with blended materials drawn after opaque ones.
 
 ### Added
+- Independent RPC ports (`--port`, including ephemeral port 0), window labels, initial sizing, atomic camera controls and ground-shadow RPC toggles.
+- `msh serve` for persistent windowless captures at exact dimensions; ordered `shoot` batches and integer material/backface pixel diagnostics.
+- Raw and position-welded topology analysis with explicit tolerance, boundary, manifold and closed-surface results.
+- Simultaneous scene meshes via `--mesh all`, external clips via `--clips`, and RPC clip/time/frame controls.
+- Meshopt-compressed and quantized glTF decoding, with per-texture UV transforms and decoded-size/span validation.
+- Directional shadows on an invisible ground catcher, hidden from below; G toggles the shadow.
 - Normal maps, metallic-roughness, and occlusion textures; vertex normals and tangents are used for lit shading (skinned along with positions).
 - Hemisphere ambient fill in `lit` shading so PBR assets stay readable on their unlit sides.
 - Mipmapped, anisotropically filtered material textures.
 
 ### Changed
-- Default background is now a dithered radial gradient (black center to dark gray edges) instead of solid black, in `view` and `render`. `--clear-color`, `--transparent-bg`, `remote set-clear-color`, and `--preset sprite-bake` still give a solid background.
+- RPC `load_model` and `screenshot` now return structured completion results rather than queued-status strings.
+- Default background is now a dithered radial gradient (medium-dark cool gray center to dark gray edges) instead of solid black, in `view` and `render`. `--clear-color`, `--transparent-bg`, `remote set-clear-color`, and `--preset sprite-bake` still give a solid background.
+
+## [0.7.0] - 2026-04-05
+
+### Added
+- Mesh cleanup and simplification, projection onto a reference surface, and optional bone-weight transfer.
+- GLB output and multi-mesh viewer selection.
 
 ## [0.6.0] - 2026-03-28
 

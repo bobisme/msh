@@ -1,11 +1,11 @@
-use wgpu;
-use wgpu_text::{
-    BrushBuilder, TextBrush,
-    glyph_brush::{ab_glyph::FontArc, Section, Text},
-};
 use font_kit::family_name::FamilyName;
 use font_kit::properties::Properties;
 use font_kit::source::SystemSource;
+use wgpu;
+use wgpu_text::{
+    BrushBuilder, TextBrush,
+    glyph_brush::{Section, Text, ab_glyph::FontArc},
+};
 
 use super::state::ViewerState;
 
@@ -45,7 +45,10 @@ impl UiRenderer {
             })?;
 
         // Load the font data
-        let font_data = handle.load()?.copy_font_data().ok_or("Failed to copy font data")?;
+        let font_data = handle
+            .load()?
+            .copy_font_data()
+            .ok_or("Failed to copy font data")?;
         Ok(font_data.to_vec())
     }
 
@@ -55,14 +58,16 @@ impl UiRenderer {
         config: &wgpu::SurfaceConfiguration,
     ) -> Self {
         // Load a system font using font-kit (cross-platform)
-        let font_data = Self::load_system_font()
-            .expect("Failed to load system font");
+        let font_data = Self::load_system_font().expect("Failed to load system font");
 
-        let font = FontArc::try_from_vec(font_data)
-            .expect("Failed to parse font");
+        let font = FontArc::try_from_vec(font_data).expect("Failed to parse font");
 
-        let brush = BrushBuilder::using_fonts(vec![font])
-            .build(device, config.width, config.height, config.format);
+        let brush = BrushBuilder::using_fonts(vec![font]).build(
+            device,
+            config.width,
+            config.height,
+            config.format,
+        );
 
         Self { brush }
     }
@@ -73,7 +78,15 @@ impl UiRenderer {
     }
 
     /// Queue text for rendering
-    pub fn queue_text(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, state: &ViewerState, rpc_active: bool, animation_info: Option<&AnimationInfo>, mesh_info: Option<&MeshSelectionInfo>) {
+    pub fn queue_text(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        state: &ViewerState,
+        rpc_active: bool,
+        animation_info: Option<&AnimationInfo>,
+        mesh_info: Option<&MeshSelectionInfo>,
+    ) {
         let x_offset = 11.0;
         let y_offset = 15.0;
         let line_height = 18.0;
@@ -87,9 +100,11 @@ impl UiRenderer {
         // Controls section
         sections.push(Section {
             screen_position: (x_offset, current_y),
-            text: vec![Text::new("Controls")
-                .with_scale(header_size)
-                .with_color([0.8, 0.8, 0.8, 1.0])],
+            text: vec![
+                Text::new("Controls")
+                    .with_scale(header_size)
+                    .with_color([0.8, 0.8, 0.8, 1.0]),
+            ],
             ..Default::default()
         });
         current_y += line_height + header_padding;
@@ -100,6 +115,7 @@ impl UiRenderer {
             "Scroll: Zoom",
             "W: Toggle Wireframe",
             "B: Toggle Backfaces",
+            "G: Toggle Ground Shadow",
             "U: Toggle UI",
         ];
         if mesh_info.is_some() {
@@ -110,9 +126,11 @@ impl UiRenderer {
         for control in controls {
             sections.push(Section {
                 screen_position: (x_offset, current_y),
-                text: vec![Text::new(control)
-                    .with_scale(text_size)
-                    .with_color([0.9, 0.9, 0.9, 1.0])],
+                text: vec![
+                    Text::new(control)
+                        .with_scale(text_size)
+                        .with_color([0.9, 0.9, 0.9, 1.0]),
+                ],
                 ..Default::default()
             });
             current_y += line_height;
@@ -122,9 +140,11 @@ impl UiRenderer {
         current_y += line_height;
         sections.push(Section {
             screen_position: (x_offset, current_y),
-            text: vec![Text::new("Mesh Info")
-                .with_scale(header_size)
-                .with_color([0.8, 0.8, 0.8, 1.0])],
+            text: vec![
+                Text::new("Mesh Info")
+                    .with_scale(header_size)
+                    .with_color([0.8, 0.8, 0.8, 1.0]),
+            ],
             ..Default::default()
         });
         current_y += line_height + header_padding;
@@ -135,9 +155,11 @@ impl UiRenderer {
             mesh_name_text = format!("Mesh {}/{}: {}", info.index + 1, info.count, info.name);
             sections.push(Section {
                 screen_position: (x_offset, current_y),
-                text: vec![Text::new(&mesh_name_text)
-                    .with_scale(text_size)
-                    .with_color([0.9, 0.9, 0.9, 1.0])],
+                text: vec![
+                    Text::new(&mesh_name_text)
+                        .with_scale(text_size)
+                        .with_color([0.9, 0.9, 0.9, 1.0]),
+                ],
                 ..Default::default()
             });
             current_y += line_height;
@@ -147,35 +169,49 @@ impl UiRenderer {
         let vertices_text = format!("Vertices: {}", state.stats.vertex_count);
         let edges_text = format!("Edges: {}", state.stats.edge_count);
         let faces_text = format!("Faces: {}", state.stats.face_count);
-        let manifold_text = if state.stats.is_manifold {
-            "Manifold: Yes".to_string()
+        let manifold_text = if let Some(topology) = &state.stats.topology {
+            format!(
+                "Boundary loops: {} raw / {} welded; manifold: {}",
+                topology.raw.boundary_loops,
+                topology.welded.boundary_loops,
+                topology.raw.is_manifold
+            )
         } else {
-            format!("Manifold: No ({} holes)", state.stats.hole_count)
+            format!(
+                "Manifold: {} ({} boundary loops)",
+                state.stats.is_manifold, state.stats.hole_count
+            )
         };
 
         sections.push(Section {
             screen_position: (x_offset, current_y),
-            text: vec![Text::new(&vertices_text)
-                .with_scale(text_size)
-                .with_color([0.9, 0.9, 0.9, 1.0])],
+            text: vec![
+                Text::new(&vertices_text)
+                    .with_scale(text_size)
+                    .with_color([0.9, 0.9, 0.9, 1.0]),
+            ],
             ..Default::default()
         });
         current_y += line_height;
 
         sections.push(Section {
             screen_position: (x_offset, current_y),
-            text: vec![Text::new(&edges_text)
-                .with_scale(text_size)
-                .with_color([0.9, 0.9, 0.9, 1.0])],
+            text: vec![
+                Text::new(&edges_text)
+                    .with_scale(text_size)
+                    .with_color([0.9, 0.9, 0.9, 1.0]),
+            ],
             ..Default::default()
         });
         current_y += line_height;
 
         sections.push(Section {
             screen_position: (x_offset, current_y),
-            text: vec![Text::new(&faces_text)
-                .with_scale(text_size)
-                .with_color([0.9, 0.9, 0.9, 1.0])],
+            text: vec![
+                Text::new(&faces_text)
+                    .with_scale(text_size)
+                    .with_color([0.9, 0.9, 0.9, 1.0]),
+            ],
             ..Default::default()
         });
         current_y += line_height;
@@ -189,9 +225,11 @@ impl UiRenderer {
 
         sections.push(Section {
             screen_position: (x_offset, current_y),
-            text: vec![Text::new(&manifold_text)
-                .with_scale(text_size)
-                .with_color(manifold_color)],
+            text: vec![
+                Text::new(&manifold_text)
+                    .with_scale(text_size)
+                    .with_color(manifold_color),
+            ],
             ..Default::default()
         });
 
@@ -203,9 +241,11 @@ impl UiRenderer {
             current_y += line_height;
             sections.push(Section {
                 screen_position: (x_offset, current_y),
-                text: vec![Text::new("Animation")
-                    .with_scale(header_size)
-                    .with_color([0.8, 0.8, 0.8, 1.0])],
+                text: vec![
+                    Text::new("Animation")
+                        .with_scale(header_size)
+                        .with_color([0.8, 0.8, 0.8, 1.0]),
+                ],
                 ..Default::default()
             });
             current_y += line_height + header_padding;
@@ -218,9 +258,11 @@ impl UiRenderer {
             );
             sections.push(Section {
                 screen_position: (x_offset, current_y),
-                text: vec![Text::new(&anim_clip_text)
-                    .with_scale(text_size)
-                    .with_color([0.9, 0.9, 0.9, 1.0])],
+                text: vec![
+                    Text::new(&anim_clip_text)
+                        .with_scale(text_size)
+                        .with_color([0.9, 0.9, 0.9, 1.0]),
+                ],
                 ..Default::default()
             });
             current_y += line_height;
@@ -228,9 +270,11 @@ impl UiRenderer {
             anim_time_text = format!("Time: {:.2} / {:.2}s", info.time, info.duration);
             sections.push(Section {
                 screen_position: (x_offset, current_y),
-                text: vec![Text::new(&anim_time_text)
-                    .with_scale(text_size)
-                    .with_color([0.9, 0.9, 0.9, 1.0])],
+                text: vec![
+                    Text::new(&anim_time_text)
+                        .with_scale(text_size)
+                        .with_color([0.9, 0.9, 0.9, 1.0]),
+                ],
                 ..Default::default()
             });
             current_y += line_height;
@@ -247,9 +291,11 @@ impl UiRenderer {
             };
             sections.push(Section {
                 screen_position: (x_offset, current_y),
-                text: vec![Text::new(&anim_status_text)
-                    .with_scale(text_size)
-                    .with_color(status_color)],
+                text: vec![
+                    Text::new(&anim_status_text)
+                        .with_scale(text_size)
+                        .with_color(status_color),
+                ],
                 ..Default::default()
             });
         }
@@ -259,18 +305,22 @@ impl UiRenderer {
             current_y += line_height * 2.0;
             sections.push(Section {
                 screen_position: (x_offset, current_y),
-                text: vec![Text::new("RPC Server")
-                    .with_scale(header_size)
-                    .with_color([0.8, 0.8, 0.8, 1.0])],
+                text: vec![
+                    Text::new("RPC Server")
+                        .with_scale(header_size)
+                        .with_color([0.8, 0.8, 0.8, 1.0]),
+                ],
                 ..Default::default()
             });
             current_y += line_height + header_padding;
 
             sections.push(Section {
                 screen_position: (x_offset, current_y),
-                text: vec![Text::new("Active: 127.0.0.1:9001")
-                    .with_scale(text_size)
-                    .with_color([0.4, 1.0, 0.4, 1.0])],
+                text: vec![
+                    Text::new(state.rpc_address.as_deref().unwrap_or("Starting"))
+                        .with_scale(text_size)
+                        .with_color([0.4, 1.0, 0.4, 1.0]),
+                ],
                 ..Default::default()
             });
         }
@@ -280,11 +330,7 @@ impl UiRenderer {
     }
 
     /// Render the UI
-    pub fn render(
-        &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        view: &wgpu::TextureView,
-    ) {
+    pub fn render(&mut self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("UI Render Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {

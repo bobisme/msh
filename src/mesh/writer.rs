@@ -33,11 +33,7 @@ pub fn write_mesh(
     match ext.as_str() {
         "glb" => write_glb(path, positions, face_indices, normals, texcoords, skin_data),
         "obj" => write_obj(path, positions, face_indices),
-        _ => Err(format!(
-            "Unsupported output format '.{}'. Use .obj or .glb",
-            ext
-        )
-        .into()),
+        _ => Err(format!("Unsupported output format '.{}'. Use .obj or .glb", ext).into()),
     }
 }
 
@@ -486,10 +482,7 @@ fn write_glb(
     attributes.insert(Valid(json::mesh::Semantic::Positions), pos_accessor_idx);
     attributes.insert(Valid(json::mesh::Semantic::Normals), norm_accessor_idx);
     if let Some(uv_idx) = uv_accessor_idx {
-        attributes.insert(
-            Valid(json::mesh::Semantic::TexCoords(0)),
-            uv_idx,
-        );
+        attributes.insert(Valid(json::mesh::Semantic::TexCoords(0)), uv_idx);
     }
     if let Some((joints_acc, weights_acc, _)) = skin_accessors {
         attributes.insert(Valid(json::mesh::Semantic::Joints(0)), joints_acc);
@@ -522,7 +515,12 @@ fn write_glb(
 
         // First pass: create all joint nodes (without children — we'll fill those in)
         for joint in &skin.skeleton.joints {
-            let (t, r, s) = joint.local_transform.decompose();
+            let transform = super::skeleton::JointTransform::Matrix(
+                (nalgebra::Matrix4::from(joint.parent_transform)
+                    * joint.local_transform.to_matrix4())
+                .into(),
+            );
+            let (t, r, s) = transform.decompose();
 
             let node_idx = root.push(json::Node {
                 mesh: None,
@@ -543,7 +541,8 @@ fn write_glb(
 
         // Second pass: set up parent-child relationships
         // Collect children per parent
-        let mut children_map: Vec<Vec<json::Index<json::scene::Node>>> = vec![Vec::new(); joint_count];
+        let mut children_map: Vec<Vec<json::Index<json::scene::Node>>> =
+            vec![Vec::new(); joint_count];
         for joint in &skin.skeleton.joints {
             if let Some(parent_idx) = joint.parent {
                 children_map[parent_idx].push(joint_node_indices[joint.index]);
@@ -622,7 +621,9 @@ fn write_glb(
                     let ts_view_idx = root.push(json::buffer::View {
                         buffer: buffer_idx,
                         byte_length: json::validation::USize64::from(binary.timestamps_byte_length),
-                        byte_offset: Some(json::validation::USize64::from(binary.timestamps_offset)),
+                        byte_offset: Some(json::validation::USize64::from(
+                            binary.timestamps_offset,
+                        )),
                         byte_stride: None,
                         target: None,
                         extensions: None,
@@ -682,7 +683,9 @@ fn write_glb(
                         interpolation: Valid(match channel.interpolation {
                             Interpolation::Linear => json::animation::Interpolation::Linear,
                             Interpolation::Step => json::animation::Interpolation::Step,
-                            Interpolation::CubicSpline => json::animation::Interpolation::CubicSpline,
+                            Interpolation::CubicSpline => {
+                                json::animation::Interpolation::CubicSpline
+                            }
                         }),
                         output: val_accessor_idx,
                     });
@@ -735,10 +738,7 @@ fn write_glb(
     Ok(())
 }
 
-fn compute_smooth_normals(
-    positions: &[[f32; 3]],
-    face_indices: &[[u32; 3]],
-) -> Vec<[f32; 3]> {
+fn compute_smooth_normals(positions: &[[f32; 3]], face_indices: &[[u32; 3]]) -> Vec<[f32; 3]> {
     let mut normals = vec![[0.0f32; 3]; positions.len()];
 
     for tri in face_indices {
@@ -797,6 +797,7 @@ mod tests {
                     node_index: 0,
                     name: Some("root".into()),
                     parent: None,
+                    parent_transform: nalgebra::Matrix4::identity().into(),
                     inverse_bind_matrix: [
                         [1.0, 0.0, 0.0, 0.0],
                         [0.0, 1.0, 0.0, 0.0],
@@ -814,6 +815,7 @@ mod tests {
                     node_index: 1,
                     name: Some("child".into()),
                     parent: Some(0),
+                    parent_transform: nalgebra::Matrix4::identity().into(),
                     inverse_bind_matrix: [
                         [1.0, 0.0, 0.0, 0.0],
                         [0.0, 1.0, 0.0, 0.0],
@@ -829,12 +831,8 @@ mod tests {
             ],
         };
 
-        let joint_indices: Vec<[u16; 4]> = vec![
-            [0, 0, 0, 0],
-            [0, 1, 0, 0],
-            [1, 0, 0, 0],
-            [0, 1, 0, 0],
-        ];
+        let joint_indices: Vec<[u16; 4]> =
+            vec![[0, 0, 0, 0], [0, 1, 0, 0], [1, 0, 0, 0], [0, 1, 0, 0]];
         let joint_weights: Vec<[f32; 4]> = vec![
             [1.0, 0.0, 0.0, 0.0],
             [0.6, 0.4, 0.0, 0.0],

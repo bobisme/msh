@@ -3,7 +3,7 @@ use baby_shark::decimation::{
     AlwaysDecimate, ConstantErrorDecimationCriteria, IncrementalDecimator, QuadricError,
 };
 use baby_shark::exports::nalgebra::Vector3;
-use baby_shark::io::{write_to_file, Builder, IndexedBuilder};
+use baby_shark::io::{Builder, IndexedBuilder, write_to_file};
 use baby_shark::mesh::corner_table::CornerTableF;
 use baby_shark::remeshing::incremental::IncrementalRemesher;
 use baby_shark::remeshing::voxel::{MeshingMethod, VoxelRemesher};
@@ -92,11 +92,14 @@ pub fn merge_close_vertices(
         let v2 = vertex_map[v2_idx];
 
         // Skip degenerate faces (where vertices got merged into same point)
-        if v0 != v1 && v1 != v2 && v0 != v2
-            && let Err(e) = builder.add_face(v0, v1, v2) {
-                // Skip faces that fail to add (likely degenerate)
-                eprintln!("Warning: Skipping degenerate face: {:?}", e);
-            }
+        if v0 != v1
+            && v1 != v2
+            && v0 != v2
+            && let Err(e) = builder.add_face(v0, v1, v2)
+        {
+            // Skip faces that fail to add (likely degenerate)
+            eprintln!("Warning: Skipping degenerate face: {:?}", e);
+        }
     }
 
     builder
@@ -341,46 +344,62 @@ pub fn remesh_voxel(
     Ok(())
 }
 
-pub fn show_stats(input: &PathBuf, mesh_name: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Loading mesh from {:?}...", input);
-    let mesh = load_mesh(input, mesh_name)?;
-
-    println!("\n=== Mesh Statistics ===");
-    println!("Vertices:  {}", mesh.count_vertices());
-    println!("Faces:     {}", mesh.count_faces());
-    println!("Triangles: {}", mesh.count_faces()); // For triangle meshes, faces = triangles
-    println!("Edges:     {}", mesh.unique_edges().count());
-
-    // Calculate bounding box
-    let mut first = true;
-    let mut min = [0.0f32, 0.0, 0.0];
-    let mut max = [0.0f32, 0.0, 0.0];
-
-    for vertex_id in mesh.vertices() {
-        let pos = mesh.vertex_position(vertex_id);
-
-        if first {
-            min = [pos.x, pos.y, pos.z];
-            max = [pos.x, pos.y, pos.z];
-            first = false;
-        } else {
-            min[0] = min[0].min(pos.x);
-            min[1] = min[1].min(pos.y);
-            min[2] = min[2].min(pos.z);
-            max[0] = max[0].max(pos.x);
-            max[1] = max[1].max(pos.y);
-            max[2] = max[2].max(pos.z);
+pub fn show_stats(
+    input: &PathBuf,
+    mesh_name: Option<&str>,
+    json: bool,
+    weld_tolerance: Option<f64>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let data = crate::mesh::loader::load_mesh_with_colors(input, mesh_name)?;
+    let positions = data.bind_positions();
+    let topology = crate::mesh::topology::report(&positions, &data.face_indices, weld_tolerance)?;
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for p in &positions {
+        for i in 0..3 {
+            min[i] = min[i].min(p[i]);
+            max[i] = max[i].max(p[i]);
         }
     }
-
-    if !first {
-        let size = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
-        println!("\n=== Bounding Box ===");
-        println!("Min: ({:.3}, {:.3}, {:.3})", min[0], min[1], min[2]);
-        println!("Max: ({:.3}, {:.3}, {:.3})", max[0], max[1], max[2]);
-        println!("Size: ({:.3}, {:.3}, {:.3})", size[0], size[1], size[2]);
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "vertices": data.positions.len(), "faces": data.face_indices.len(), "triangles": data.face_indices.len(),
+                "edges": topology.raw.edges, "topology": topology,
+                "bounds": if data.positions.is_empty() { None } else { Some((min,max)) },
+            }))?
+        );
+    } else {
+        println!("\n=== Mesh Statistics ===");
+        println!("Vertices:  {}", data.positions.len());
+        println!("Faces:     {}", data.face_indices.len());
+        println!("Triangles: {}", data.face_indices.len());
+        println!("Edges:     {}", topology.raw.edges);
+        println!(
+            "Boundary loops: {} raw / {} welded (tolerance {})",
+            topology.raw.boundary_loops, topology.welded.boundary_loops, topology.weld_tolerance
+        );
+        println!(
+            "Manifold: {} raw / {} welded",
+            topology.raw.is_manifold, topology.welded.is_manifold
+        );
+        println!(
+            "Closed: {} raw / {} welded",
+            topology.raw.is_closed, topology.welded.is_closed
+        );
+        if !data.positions.is_empty() {
+            println!("\n=== Bounding Box ===");
+            println!("Min: ({:.3}, {:.3}, {:.3})", min[0], min[1], min[2]);
+            println!("Max: ({:.3}, {:.3}, {:.3})", max[0], max[1], max[2]);
+            println!(
+                "Size: ({:.3}, {:.3}, {:.3})",
+                max[0] - min[0],
+                max[1] - min[1],
+                max[2] - min[2]
+            );
+        }
     }
-
     Ok(())
 }
 
@@ -553,10 +572,9 @@ pub fn remesh_simplify(
             .keep_boundary(keep_bnd);
             decimator.decimate(mesh);
         } else {
-            let mut decimator =
-                IncrementalDecimator::<f32, QuadricError, AlwaysDecimate>::new()
-                    .min_faces_count(Some(target_faces))
-                    .keep_boundary(keep_bnd);
+            let mut decimator = IncrementalDecimator::<f32, QuadricError, AlwaysDecimate>::new()
+                .min_faces_count(Some(target_faces))
+                .keep_boundary(keep_bnd);
             decimator.decimate(mesh);
         }
     };
@@ -588,9 +606,7 @@ pub fn remesh_simplify(
 
     // baby_shark's write_to_file panics on meshes with deleted vertices from
     // aggressive QEM. Fall back to manual OBJ writer if it fails.
-    let write_result = suppress_panic(|| {
-        write_to_file(&mesh, output)
-    });
+    let write_result = suppress_panic(|| write_to_file(&mesh, output));
     match write_result {
         Ok(Ok(())) => {}
         _ => {
@@ -700,9 +716,11 @@ fn write_corner_table_obj(
 
     for fid in mesh.faces() {
         let (v0, v1, v2) = mesh.face_vertices(fid);
-        if let (Some(&i0), Some(&i1), Some(&i2)) =
-            (vertex_map.get(&v0), vertex_map.get(&v1), vertex_map.get(&v2))
-        {
+        if let (Some(&i0), Some(&i1), Some(&i2)) = (
+            vertex_map.get(&v0),
+            vertex_map.get(&v1),
+            vertex_map.get(&v2),
+        ) {
             writeln!(file, "f {} {} {}", i0, i1, i2)?;
         }
     }
