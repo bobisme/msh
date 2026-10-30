@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.8.1] - 2026-10-30
+
+### Fixed
+- Use Metal by default on macOS for the viewer and headless renderer; honor `WGPU_BACKEND` to select a different backend. Thanks to @naieum for the fix.
+
 ## [0.8.0] - 2026-10-30
 
 ### Fixed

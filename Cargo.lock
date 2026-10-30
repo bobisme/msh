@@ -2638,7 +2638,7 @@ dependencies = [
 
 [[package]]
 name = "mshmash"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "baby_shark",
  "base64 0.22.1",
