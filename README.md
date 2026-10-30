@@ -32,6 +32,10 @@ Remote control is enabled by default. To add RenderDoc support, install with
 `cargo install mshmash --locked --features renderdoc`. To build the current
 checkout instead, run `cargo install --locked --path .`.
 
+The viewer and renderer use Metal on macOS and Vulkan on other platforms. Set
+`WGPU_BACKEND` (for example `vulkan`, `metal`, `dx12` or `gl`) to choose a
+different wgpu backend.
+
 ## Quick start
 
 ```bash

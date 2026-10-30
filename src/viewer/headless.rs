@@ -220,7 +220,7 @@ pub fn render_to_file(
 pub async fn create_headless_device()
 -> Result<(wgpu::Device, wgpu::Queue, wgpu::TextureFormat), Box<dyn std::error::Error>> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::VULKAN,
+        backends: super::gpu::default_backends(),
         ..Default::default()
     });
 
