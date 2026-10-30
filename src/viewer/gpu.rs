@@ -16,9 +16,8 @@ impl GpuState {
     pub async fn new(window: Arc<Window>, vsync: bool) -> Result<Self, Box<dyn std::error::Error>> {
         let size = window.inner_size();
 
-        // Create instance with Vulkan backend for RenderDoc support
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN,
+            backends: default_backends(),
             ..Default::default()
         });
 
@@ -104,4 +103,16 @@ impl GpuState {
     ) -> Result<(), Box<dyn std::error::Error>> {
         super::readback::save_png(&self.device, &self.queue, texture, path)
     }
+}
+
+/// Graphics backends to request: Metal on macOS (wgpu does not compile in Vulkan/MoltenVK
+/// there by default), Vulkan elsewhere for RenderDoc support. `WGPU_BACKEND` (e.g. `metal`,
+/// `vulkan`, `dx12`, `gl`, comma-separated) overrides the default.
+pub fn default_backends() -> wgpu::Backends {
+    let platform = if cfg!(target_os = "macos") {
+        wgpu::Backends::METAL
+    } else {
+        wgpu::Backends::VULKAN
+    };
+    wgpu::Backends::from_env().unwrap_or(platform)
 }
