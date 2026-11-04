@@ -1,0 +1,117 @@
+{
+  "goal": "bn-1t8",
+  "phases": [
+    "bn-2as",
+    "bn-11g",
+    "bn-jzh",
+    "bn-3s6"
+  ],
+  "tasks": [
+    {
+      "id": "bn-1pb",
+      "request": 1,
+      "phase": 1,
+      "title": "Configure independent RPC endpoints and report ephemeral ports"
+    },
+    {
+      "id": "bn-109",
+      "request": 2,
+      "phase": 1,
+      "title": "Acknowledge ordered screenshots after PNG completion"
+    },
+    {
+      "id": "bn-1re",
+      "request": 3,
+      "phase": 1,
+      "title": "Expose viewer title and initial window dimensions",
+      "requests": [
+        3,
+        16
+      ]
+    },
+    {
+      "id": "bn-1cg",
+      "request": 4,
+      "phase": 1,
+      "title": "Use a supported presentation mode when vsync is disabled"
+    },
+    {
+      "id": "bn-16a",
+      "request": 7,
+      "phase": 1,
+      "title": "Acknowledge model loads with stats and optional camera preservation"
+    },
+    {
+      "id": "bn-2rd",
+      "request": 10,
+      "phase": 1,
+      "title": "Expose ground-shadow toggles through RPC and CLI"
+    },
+    {
+      "id": "bn-1vr",
+      "request": 17,
+      "phase": 1,
+      "title": "Set validated camera pose atomically and support pole views"
+    },
+    {
+      "id": "bn-vt1",
+      "request": 8,
+      "phase": 2,
+      "title": "Respect material alpha cutouts in backface diagnostics"
+    },
+    {
+      "id": "bn-15i",
+      "request": 9,
+      "phase": 2,
+      "title": "Report raw and position-welded topology separately"
+    },
+    {
+      "id": "bn-2e9",
+      "request": 11,
+      "phase": 2,
+      "title": "Offer unlit red backface diagnostics"
+    },
+    {
+      "id": "bn-17j",
+      "request": 15,
+      "phase": 2,
+      "title": "Render static and skinned multi-angle sprite sheets reliably"
+    },
+    {
+      "id": "bn-3eh",
+      "request": 3,
+      "phase": 3,
+      "title": "Serve persistent offscreen rendering at explicit dimensions"
+    },
+    {
+      "id": "bn-djk",
+      "request": 6,
+      "phase": 3,
+      "title": "Capture ordered batches of camera shots in one RPC"
+    },
+    {
+      "id": "bn-gm4",
+      "request": 5,
+      "phase": 3,
+      "title": "Count depth-tested material and backface pixels on the GPU"
+    },
+    {
+      "id": "bn-2fi",
+      "request": 12,
+      "phase": 4,
+      "title": "Load simultaneous scene meshes with correct transforms and materials"
+    },
+    {
+      "id": "bn-1pe",
+      "request": 13,
+      "phase": 4,
+      "title": "Apply external animation clips with explicit skeleton compatibility"
+    },
+    {
+      "id": "bn-9gi",
+      "request": 14,
+      "phase": 4,
+      "title": "Decode quantized and meshopt-compressed shipped GLBs"
+    }
+  ]
+}

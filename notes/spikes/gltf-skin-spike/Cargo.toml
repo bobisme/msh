@@ -1,0 +1,11 @@
+[package]
+name = "gltf-skin-spike"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "gltf-skin-spike"
+path = "src/main.rs"
+
+[dependencies]
+gltf = { version = "1.4.1", features = ["extras", "names"] }
