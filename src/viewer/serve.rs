@@ -110,6 +110,7 @@ impl OffscreenScene {
                 .set_pose(Some([d * 0.5, d * 0.3, d]), Some([0.0; 3]), None)?;
         }
         let result = MeshStatsResponse {
+            max_dimension: Some(mesh.max_dimension),
             vertices: stats.vertex_count,
             edges: stats.edge_count,
             faces: stats.face_count,
@@ -186,7 +187,14 @@ impl OffscreenScene {
         );
         drop(state);
         self.queue.submit(Some(encoder.finish()));
-        super::readback::save_png(&self.device, &self.queue, &self.target, &path)?;
+        if std::path::Path::new(&path)
+            .extension()
+            .is_some_and(|ext| ext == "rgba")
+        {
+            super::readback::save_rgba(&self.device, &self.queue, &self.target, &path)?;
+        } else {
+            super::readback::save_png(&self.device, &self.queue, &self.target, &path)?;
+        }
         Ok(ScreenshotResponse {
             path,
             width: self.config.width,

@@ -41,6 +41,9 @@ pub fn parse_angle(s: &str) -> Result<f32, String> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeshStatsResponse {
+    /// Extent of the rendered bind-pose bounds, available on load responses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_dimension: Option<f32>,
     pub vertices: usize,
     pub edges: usize,
     pub faces: usize,

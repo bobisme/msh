@@ -79,3 +79,37 @@ pub fn save_png(
     )?;
     Ok(())
 }
+
+/// Save tightly packed, top-left-origin RGBA8 pixels for local live-preview clients.
+pub fn save_rgba(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    path: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !matches!(
+        texture.format(),
+        wgpu::TextureFormat::Rgba8Unorm
+            | wgpu::TextureFormat::Rgba8UnormSrgb
+            | wgpu::TextureFormat::Bgra8Unorm
+            | wgpu::TextureFormat::Bgra8UnormSrgb
+    ) {
+        return Err("Raw capture needs an RGBA8 or BGRA8 render target".into());
+    }
+    let mut pixels = read_pixels(device, queue, texture)?;
+    if matches!(
+        texture.format(),
+        wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+    ) {
+        for pixel in pixels.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+    }
+    if let Some(parent) = std::path::Path::new(path).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, pixels)?;
+    Ok(())
+}

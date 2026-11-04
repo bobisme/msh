@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Offscreen RPC screenshots can write raw RGBA8 data via a `.rgba` path, and model-load responses include the rendered mesh extent as `max_dimension`.
+
 ## [0.8.2] - 2026-11-04
 
 ### Changed

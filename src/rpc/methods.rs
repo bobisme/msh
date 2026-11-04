@@ -432,6 +432,7 @@ impl ViewerRpcServer for ViewerRpcImpl {
     async fn get_stats(&self) -> Result<MeshStatsResponse, ErrorObjectOwned> {
         let state = self.state.lock().unwrap();
         Ok(MeshStatsResponse {
+            max_dimension: None,
             vertices: state.stats.vertex_count,
             edges: state.stats.edge_count,
             faces: state.stats.face_count,

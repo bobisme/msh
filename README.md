@@ -134,12 +134,18 @@ only after binding. Pass that port to every `msh remote --port N ...` command.
 Bind errors cause startup to fail. Multiple agents can use separate endpoints.
 
 RPC `load_model(path, mesh_name?, keep_camera?, clips?)` now waits for a successful
-GPU upload and returns mesh statistics, including `triangles` and detailed
-`topology`. `msh remote load --keep-camera` preserves the current camera. Failed
-loads keep the previous valid scene. `screenshot(path)` waits until the PNG is
+GPU upload and returns mesh statistics, including `triangles`, detailed
+`topology`, and the centered mesh extent `max_dimension`. `msh remote load
+--keep-camera` preserves the current camera. Failed
+loads keep the previous valid scene. `screenshot(path)` waits until the image is
 written and returns `{path, width, height}`; failures are RPC errors. Both CLI
 commands print the returned JSON. Older clients expecting a string must update.
 No stdout acknowledgment parsing or file-existence polling is needed.
+
+For low-latency embedding, headless `serve` writes tightly packed, top-left-origin
+RGBA8 bytes when the screenshot path ends in `.rgba`. The byte count is exactly
+`width * height * 4`; row padding is removed and BGRA targets are converted.
+Other paths retain PNG output. Native window capture retains PNG output.
 
 Camera/state commands and captures run in order. A capture finishes before later
 camera commands are applied. Use `set_camera(eye, target, up?, fov?)` to update a

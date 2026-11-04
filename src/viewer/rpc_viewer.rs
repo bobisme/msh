@@ -328,6 +328,7 @@ impl RpcViewerApp {
                                 });
                                 self.materials = mesh_data.materials;
                                 let response = crate::rpc::types::MeshStatsResponse {
+                                    max_dimension: Some(self.render_mesh.max_dimension),
                                     vertices: stats.vertex_count,
                                     edges: stats.edge_count,
                                     faces: stats.face_count,

@@ -202,6 +202,15 @@ async fn contract(native: bool) {
     service.call("set_animation", json!(["shift"])).await;
     let first = service.capture(&root.file("rest.png")).await;
     if !native {
+        let raw_path = root.file("rest.rgba");
+        let result = service.call("screenshot", json!([raw_path])).await;
+        assert_eq!(result["width"], first.width());
+        assert_eq!(result["height"], first.height());
+        assert_eq!(fs::read(raw_path).unwrap(), *first.as_raw());
+        assert!(stats["max_dimension"].as_f64().unwrap() > 0.);
+    }
+
+    if !native {
         assert_eq!(first.dimensions(), (320, 240));
     }
     service.call("set_time", json!([0.5])).await;
