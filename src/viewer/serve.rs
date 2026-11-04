@@ -90,7 +90,11 @@ impl OffscreenScene {
         self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let mut renderer = MeshRenderer::new(&self.device, &self.queue, &self.config);
-        renderer.load_mesh(&self.device, &self.queue, &mesh, &data.materials);
+        if let Err(error) = renderer.load_mesh(&self.device, &self.queue, &mesh, &data.materials) {
+            let _ = pollster::block_on(self.device.pop_error_scope());
+            let _ = pollster::block_on(self.device.pop_error_scope());
+            return Err(error.into());
+        }
         if let Some(skeleton) = &mesh.skeleton_data {
             renderer.update_joint_palette(&self.queue, &skeleton.joint_matrices);
             renderer.set_joint_count(skeleton.joint_matrices.len() as u32);

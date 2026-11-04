@@ -845,7 +845,18 @@ impl MeshRenderer {
         queue: &wgpu::Queue,
         mesh: &RenderMesh,
         materials: &MeshMaterials,
-    ) {
+    ) -> Result<(), String> {
+        let bytes = mesh
+            .vertices
+            .len()
+            .checked_mul(std::mem::size_of::<Vertex>())
+            .ok_or("Viewer vertex buffer size overflow")?;
+        let limit = device.limits().max_buffer_size;
+        if bytes as u64 > limit {
+            return Err(format!(
+                "Mesh needs {bytes} vertex-buffer bytes; selected GPU device limit is {limit}. Simplify the mesh before viewing."
+            ));
+        }
         let vertices = &mesh.vertices;
         self.ground_bounds = mesh.ground_bounds;
         self.skin_center = mesh.skeleton_data.as_ref().map_or([0.0; 3], |s| s.center);
@@ -943,6 +954,7 @@ impl MeshRenderer {
 
         self.num_indices = indices.len() as u32;
         self.num_backface_indices = backface_indices.len() as u32;
+        Ok(())
     }
 
     /// Load mesh data for dynamic per-frame updates (buffers created with COPY_DST).

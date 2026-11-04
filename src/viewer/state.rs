@@ -355,9 +355,9 @@ impl MeshStats {
             .len()
             .checked_mul(3 * std::mem::size_of::<super::mesh_renderer::Vertex>())
             .ok_or("Viewer vertex buffer size overflow")?;
-        let limit = wgpu::Limits::default().max_buffer_size;
+        let limit = super::gpu::VIEWER_BUFFER_LIMIT;
         if bytes as u64 > limit {
-            return Err(format!("Mesh needs {bytes} vertex-buffer bytes; viewer device limit is {limit}. Simplify the mesh before viewing.").into());
+            return Err(format!("Mesh needs {bytes} vertex-buffer bytes; viewer preview limit is {limit}. Simplify the mesh before viewing.").into());
         }
         let topology =
             crate::mesh::topology::report(&data.bind_positions(), &data.face_indices, None)?;

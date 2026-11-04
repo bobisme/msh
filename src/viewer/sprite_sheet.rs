@@ -158,7 +158,7 @@ fn render_all_tiles(
 
     // Create mesh renderer and load mesh data
     let mut mesh_renderer = MeshRenderer::new(&device, &queue, &surface_config);
-    mesh_renderer.load_mesh(&device, &queue, &render_mesh, &mesh_data.materials);
+    mesh_renderer.load_mesh(&device, &queue, &render_mesh, &mesh_data.materials)?;
 
     // Set up initial joint palette if skeleton is present
     if let Some(ref skel_data) = render_mesh.skeleton_data {

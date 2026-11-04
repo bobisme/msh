@@ -63,7 +63,7 @@ pub fn render_to_file(
 
     // Create mesh renderer and load mesh
     let mut mesh_renderer = MeshRenderer::new(&device, &queue, &config);
-    mesh_renderer.load_mesh(&device, &queue, &render_mesh, &mesh_data.materials);
+    mesh_renderer.load_mesh(&device, &queue, &render_mesh, &mesh_data.materials)?;
 
     // Set up joint palette if skeleton is present
     if let Some(ref skel_data) = render_mesh.skeleton_data {
@@ -236,7 +236,7 @@ pub async fn create_headless_device()
         .request_device(&wgpu::DeviceDescriptor {
             label: Some("Headless Device"),
             required_features: wgpu::Features::POLYGON_MODE_LINE,
-            required_limits: wgpu::Limits::default(),
+            required_limits: super::gpu::viewer_limits(adapter.limits()),
             memory_hints: Default::default(),
             trace: Default::default(),
             experimental_features: Default::default(),

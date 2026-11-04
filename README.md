@@ -207,11 +207,15 @@ msh render model.obj --angles 8 --sprite-sheet --width 128 --height 128 \
   --transparent-bg --out atlas.png
 ```
 
+The viewer and headless renderer request vertex buffers up to 1 GiB, bounded by
+the selected GPU adapter. Triangles are expanded into separate vertices; GPU
+memory and other file limits may impose a lower practical limit.
+
 Automation limits: 128 queued commands; 1 MiB RPC requests; 1–64 shots per batch;
 8192 pixels per image axis and 16 megapixels per service image; 64 megapixels per
 batch or sprite render. glTF source/decoded mesh buffers and expanded accessors
-have 512 MiB budgets, and JSON metadata is limited to 64 MiB. The existing 256 MiB
-viewer vertex-buffer limit is checked before triangle-soup allocation. Oversized
+have 512 MiB budgets, and JSON metadata is limited to 64 MiB. The 1 GiB
+viewer vertex-buffer cap is checked before triangle-soup allocation. Oversized
 work returns errors. GPU captures have a bounded readback wait.
 
 GPU regression checks (the second command opens one labeled native window):

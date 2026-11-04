@@ -292,12 +292,13 @@ impl RpcViewerApp {
                                 gpu.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
                                 let mut renderer =
                                     MeshRenderer::new(&gpu.device, &gpu.queue, &gpu.config);
-                                renderer.load_mesh(
-                                    &gpu.device,
-                                    &gpu.queue,
-                                    &render_mesh,
-                                    &mesh_data.materials,
-                                );
+                                if let Err(error) = renderer.load_mesh(
+                                    &gpu.device, &gpu.queue, &render_mesh, &mesh_data.materials,
+                                ) {
+                                    let _ = pollster::block_on(gpu.device.pop_error_scope());
+                                    let _ = pollster::block_on(gpu.device.pop_error_scope());
+                                    return Err(error);
+                                }
                                 if let Some(ref skeleton) = render_mesh.skeleton_data {
                                     renderer
                                         .update_joint_palette(&gpu.queue, &skeleton.joint_matrices);
@@ -474,7 +475,13 @@ impl ApplicationHandler for RpcViewerApp {
 
             // Create mesh renderer
             let mut mesh_renderer = MeshRenderer::new(&gpu.device, &gpu.queue, &gpu.config);
-            mesh_renderer.load_mesh(&gpu.device, &gpu.queue, &self.render_mesh, &self.materials);
+            if let Err(error) =
+                mesh_renderer.load_mesh(&gpu.device, &gpu.queue, &self.render_mesh, &self.materials)
+            {
+                eprintln!("Failed to load mesh: {error}");
+                event_loop.exit();
+                return;
+            }
             if let Some(skeleton) = &self.render_mesh.skeleton_data {
                 mesh_renderer.update_joint_palette(&gpu.queue, &skeleton.joint_matrices);
                 mesh_renderer.set_joint_count(skeleton.joint_matrices.len() as u32);

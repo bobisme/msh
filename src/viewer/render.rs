@@ -128,7 +128,12 @@ impl ViewerApp {
 
         // Rebuild GPU buffers
         if let (Some(gpu), Some(mesh_renderer)) = (self.gpu.as_ref(), self.mesh_renderer.as_mut()) {
-            mesh_renderer.load_mesh(&gpu.device, &gpu.queue, &render_mesh, &materials);
+            if let Err(error) =
+                mesh_renderer.load_mesh(&gpu.device, &gpu.queue, &render_mesh, &materials)
+            {
+                eprintln!("Failed to load mesh: {error}");
+                return;
+            }
 
             // Update joint palette if skeleton is present
             if let Some(ref skel_data) = render_mesh.skeleton_data {
@@ -208,7 +213,13 @@ impl ApplicationHandler for ViewerApp {
 
             // Create mesh renderer
             let mut mesh_renderer = MeshRenderer::new(&gpu.device, &gpu.queue, &gpu.config);
-            mesh_renderer.load_mesh(&gpu.device, &gpu.queue, &self.render_mesh, &self.materials);
+            if let Err(error) =
+                mesh_renderer.load_mesh(&gpu.device, &gpu.queue, &self.render_mesh, &self.materials)
+            {
+                eprintln!("Failed to load mesh: {error}");
+                event_loop.exit();
+                return;
+            }
 
             // Set up joint palette if skeleton is present
             if let Some(ref skel_data) = self.render_mesh.skeleton_data {

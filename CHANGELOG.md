@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.8.2] - 2026-11-04
+
+### Changed
+- Raise the viewer and headless renderer vertex-buffer limit to 1 GiB, bounded by the selected GPU adapter. Large meshes may now exceed the previous 256 MiB limit.
+
 ## [0.8.1] - 2026-10-30
 
 ### Fixed

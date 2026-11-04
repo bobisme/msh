@@ -2,6 +2,15 @@ use std::sync::Arc;
 use wgpu;
 use winit::window::Window;
 
+/// Bound large source previews while respecting the selected adapter's actual capability.
+pub const VIEWER_BUFFER_LIMIT: u64 = 1 << 30;
+pub(super) fn viewer_limits(available: wgpu::Limits) -> wgpu::Limits {
+    wgpu::Limits {
+        max_buffer_size: available.max_buffer_size.min(VIEWER_BUFFER_LIMIT),
+        ..wgpu::Limits::default()
+    }
+}
+
 /// GPU state for wgpu rendering
 pub struct GpuState {
     pub surface: wgpu::Surface<'static>,
@@ -42,7 +51,7 @@ impl GpuState {
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
                 required_features: wgpu::Features::POLYGON_MODE_LINE, // For wireframe
-                required_limits: wgpu::Limits::default(),
+                required_limits: viewer_limits(adapter.limits()),
                 memory_hints: Default::default(),
                 trace: Default::default(),
                 experimental_features: Default::default(),
@@ -115,4 +124,24 @@ pub fn default_backends() -> wgpu::Backends {
         wgpu::Backends::VULKAN
     };
     wgpu::Backends::from_env().unwrap_or(platform)
+}
+
+#[cfg(test)]
+mod preview_limit_tests {
+    use super::*;
+    #[test]
+    fn preview_buffer_limit_is_bounded_by_the_adapter() {
+        let mut available = wgpu::Limits::default();
+        available.max_buffer_size = 2 << 30;
+        assert_eq!(
+            viewer_limits(available.clone()).max_buffer_size,
+            VIEWER_BUFFER_LIMIT
+        );
+        available.max_buffer_size = 128 << 20;
+        assert_eq!(viewer_limits(available).max_buffer_size, 128 << 20);
+        let source_bytes =
+            1_998_196u64 * 3 * std::mem::size_of::<super::super::mesh_renderer::Vertex>() as u64;
+        assert!(source_bytes > wgpu::Limits::default().max_buffer_size);
+        assert!(source_bytes < VIEWER_BUFFER_LIMIT);
+    }
 }
