@@ -533,7 +533,8 @@ impl ApplicationHandler for ViewerApp {
                     // Render
                     let surface_texture = gpu.surface.get_current_texture();
                     match surface_texture {
-                        Ok(output) => {
+                        wgpu::CurrentSurfaceTexture::Success(output)
+                        | wgpu::CurrentSurfaceTexture::Suboptimal(output) => {
                             let view = output
                                 .texture
                                 .create_view(&wgpu::TextureViewDescriptor::default());
@@ -559,18 +560,21 @@ impl ApplicationHandler for ViewerApp {
                             }
 
                             gpu.queue.submit(std::iter::once(encoder.finish()));
-                            output.present();
+                            gpu.queue.present(output);
                         }
-                        Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                            // Reconfigure surface
+                        wgpu::CurrentSurfaceTexture::Outdated => {
                             gpu.surface.configure(&gpu.device, &gpu.config);
                         }
-                        Err(wgpu::SurfaceError::OutOfMemory) => {
-                            eprintln!("Out of GPU memory");
-                            event_loop.exit();
+                        wgpu::CurrentSurfaceTexture::Lost => {
+                            if let Err(error) = gpu.recreate_surface(window.clone()) {
+                                eprintln!("Failed to recreate surface: {error}");
+                                event_loop.exit();
+                            }
                         }
-                        Err(e) => {
-                            eprintln!("Surface error: {:?}", e);
+                        wgpu::CurrentSurfaceTexture::Timeout
+                        | wgpu::CurrentSurfaceTexture::Occluded => {}
+                        wgpu::CurrentSurfaceTexture::Validation => {
+                            eprintln!("Surface texture validation failed");
                         }
                     }
 

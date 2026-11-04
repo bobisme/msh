@@ -13,6 +13,7 @@ pub(super) fn viewer_limits(available: wgpu::Limits) -> wgpu::Limits {
 
 /// GPU state for wgpu rendering
 pub struct GpuState {
+    instance: wgpu::Instance,
     pub surface: wgpu::Surface<'static>,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -25,9 +26,9 @@ impl GpuState {
     pub async fn new(window: Arc<Window>, vsync: bool) -> Result<Self, Box<dyn std::error::Error>> {
         let size = window.inner_size();
 
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: default_backends(),
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
 
         // Create surface (Arc<Window> gives us Surface<'static>)
@@ -39,6 +40,7 @@ impl GpuState {
                 power_preference: wgpu::PowerPreference::default(),
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
+                apply_limit_buckets: false,
             })
             .await
             .expect("Failed to find an appropriate adapter");
@@ -82,16 +84,27 @@ impl GpuState {
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
+            color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &config);
 
         Ok(Self {
+            instance,
             surface,
             device,
             queue,
             config,
             size,
         })
+    }
+
+    pub fn recreate_surface(
+        &mut self,
+        window: Arc<Window>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.surface = self.instance.create_surface(window)?;
+        self.surface.configure(&self.device, &self.config);
+        Ok(())
     }
 
     /// Resize the surface

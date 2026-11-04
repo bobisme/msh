@@ -40,7 +40,7 @@ pub fn read_pixels(
         timeout: Some(std::time::Duration::from_secs(30)),
     })?;
     receive.recv()??;
-    let data = buffer.slice(..).get_mapped_range();
+    let data = buffer.slice(..).get_mapped_range()?;
     let mut pixels = Vec::with_capacity(row_bytes as usize * height as usize);
     for row in data.chunks_exact(padded as usize) {
         pixels.extend_from_slice(&row[..row_bytes as usize]);

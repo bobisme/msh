@@ -54,6 +54,7 @@ impl OffscreenScene {
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
+            color_space: wgpu::SurfaceColorSpace::Auto,
         };
         Ok(Self {
             device,
@@ -87,20 +88,18 @@ impl OffscreenScene {
         }
         let stats = MeshStats::from_mesh(&data)?;
         let mesh = extract_render_data(&data, false);
-        self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validation_scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let allocation_scope = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let mut renderer = MeshRenderer::new(&self.device, &self.queue, &self.config);
         if let Err(error) = renderer.load_mesh(&self.device, &self.queue, &mesh, &data.materials) {
-            let _ = pollster::block_on(self.device.pop_error_scope());
-            let _ = pollster::block_on(self.device.pop_error_scope());
             return Err(error.into());
         }
         if let Some(skeleton) = &mesh.skeleton_data {
             renderer.update_joint_palette(&self.queue, &skeleton.joint_matrices);
             renderer.set_joint_count(skeleton.joint_matrices.len() as u32);
         }
-        let allocation = pollster::block_on(self.device.pop_error_scope());
-        let validation = pollster::block_on(self.device.pop_error_scope());
+        let allocation = pollster::block_on(allocation_scope.pop());
+        let validation = pollster::block_on(validation_scope.pop());
         if let Some(error) = allocation.or(validation) {
             return Err(error.to_string().into());
         }

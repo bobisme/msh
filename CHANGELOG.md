@@ -1,6 +1,9 @@
 # Changelog
 
-## [Unreleased]
+## [0.8.3] - 2026-11-04
+
+### Changed
+- Update wgpu and wgpu_text to 30, along with the other direct and compatible transitive dependencies. Adapt rendering, GPU readback and 3MF loading to their updated APIs.
 
 ### Added
 - Offscreen RPC screenshots can write raw RGBA8 data via a `.rgba` path, and model-load responses include the rendered mesh extent as `max_dimension`.

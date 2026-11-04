@@ -154,6 +154,7 @@ fn render_all_tiles(
         alpha_mode: wgpu::CompositeAlphaMode::Auto,
         view_formats: vec![],
         desired_maximum_frame_latency: 2,
+        color_space: wgpu::SurfaceColorSpace::Auto,
     };
 
     // Create mesh renderer and load mesh data
@@ -297,7 +298,7 @@ fn render_all_tiles(
                 .unwrap();
             receiver.recv().unwrap()?;
 
-            let data = buffer_slice.get_mapped_range();
+            let data = buffer_slice.get_mapped_range()?;
 
             // Strip row padding
             let mut img_data = Vec::with_capacity((width * height * 4) as usize);

@@ -59,6 +59,7 @@ pub fn render_to_file(
         alpha_mode: wgpu::CompositeAlphaMode::Auto,
         view_formats: vec![],
         desired_maximum_frame_latency: 2,
+        color_space: wgpu::SurfaceColorSpace::Auto,
     };
 
     // Create mesh renderer and load mesh
@@ -191,7 +192,7 @@ pub fn render_to_file(
         .unwrap();
     receiver.recv().unwrap()?;
 
-    let data = buffer_slice.get_mapped_range();
+    let data = buffer_slice.get_mapped_range()?;
 
     // Strip row padding
     let mut img_data = Vec::with_capacity((width * height * 4) as usize);
@@ -219,9 +220,9 @@ pub fn render_to_file(
 /// Create a headless wgpu device (no window surface)
 pub async fn create_headless_device()
 -> Result<(wgpu::Device, wgpu::Queue, wgpu::TextureFormat), Box<dyn std::error::Error>> {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: super::gpu::default_backends(),
-        ..Default::default()
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
 
     let adapter = instance
@@ -229,6 +230,7 @@ pub async fn create_headless_device()
             power_preference: wgpu::PowerPreference::default(),
             compatible_surface: None,
             force_fallback_adapter: false,
+            apply_limit_buckets: false,
         })
         .await?;
 

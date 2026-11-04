@@ -341,7 +341,7 @@ impl MeshRenderer {
             address_mode_v: wgpu::AddressMode::Repeat,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             anisotropy_clamp: 8,
             ..Default::default()
         });
@@ -399,11 +399,11 @@ impl MeshRenderer {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Mesh Pipeline Layout"),
             bind_group_layouts: &[
-                &bind_group_layout,
-                &material_bind_group_layout,
-                &joint_palette_bind_group_layout,
+                Some(&bind_group_layout),
+                Some(&material_bind_group_layout),
+                Some(&joint_palette_bind_group_layout),
             ],
-            push_constant_ranges: &[],
+            immediate_size: 0,
         });
 
         let shadow_binding_layout = GroundShadow::binding_layout(device);
@@ -411,12 +411,12 @@ impl MeshRenderer {
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Ground Shadow Catcher Pipeline Layout"),
                 bind_group_layouts: &[
-                    &bind_group_layout,
-                    &material_bind_group_layout,
-                    &joint_palette_bind_group_layout,
-                    &shadow_binding_layout,
+                    Some(&bind_group_layout),
+                    Some(&material_bind_group_layout),
+                    Some(&joint_palette_bind_group_layout),
+                    Some(&shadow_binding_layout),
                 ],
-                push_constant_ranges: &[],
+                immediate_size: 0,
             });
         let ground_shadow =
             GroundShadow::new(device, &shader, &pipeline_layout, &shadow_binding_layout);
@@ -435,7 +435,7 @@ impl MeshRenderer {
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some("vs_main"),
-                    buffers: &[Vertex::desc()],
+                    buffers: &[Some(Vertex::desc())],
                     compilation_options: Default::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -464,13 +464,13 @@ impl MeshRenderer {
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: wgpu::TextureFormat::Depth32Float,
                     // Blended surfaces are depth-tested but don't occlude each other
-                    depth_write_enabled: !blend,
-                    depth_compare: wgpu::CompareFunction::Less,
+                    depth_write_enabled: Some(!blend),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
                     stencil: wgpu::StencilState::default(),
                     bias: wgpu::DepthBiasState::default(),
                 }),
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             })
         };
@@ -515,7 +515,7 @@ impl MeshRenderer {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[Vertex::desc()],
+                buffers: &[Some(Vertex::desc())],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -531,13 +531,13 @@ impl MeshRenderer {
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
             multisample: Default::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -576,17 +576,17 @@ impl MeshRenderer {
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: wgpu::TextureFormat::Depth32Float,
-                    depth_write_enabled: false,
-                    depth_compare: if ground {
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(if ground {
                         wgpu::CompareFunction::Less
                     } else {
                         wgpu::CompareFunction::Always
-                    },
+                    }),
                     stencil: wgpu::StencilState::default(),
                     bias: wgpu::DepthBiasState::default(),
                 }),
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             })
         };
@@ -988,7 +988,8 @@ impl MeshRenderer {
             mapped_at_creation: true,
         });
         vb.slice(..(vertices.len() * std::mem::size_of::<Vertex>()) as u64)
-            .get_mapped_range_mut()[..bytemuck::cast_slice::<Vertex, u8>(vertices).len()]
+            .get_mapped_range_mut()
+            .expect("mapped buffer range")
             .copy_from_slice(bytemuck::cast_slice(vertices));
         vb.unmap();
         self.vertex_buffer = Some(vb);
@@ -1001,7 +1002,8 @@ impl MeshRenderer {
             mapped_at_creation: true,
         });
         ib.slice(..(indices.len() * std::mem::size_of::<u32>()) as u64)
-            .get_mapped_range_mut()[..bytemuck::cast_slice::<u32, u8>(indices).len()]
+            .get_mapped_range_mut()
+            .expect("mapped buffer range")
             .copy_from_slice(bytemuck::cast_slice(indices));
         ib.unmap();
         self.index_buffer = Some(ib);
@@ -1014,7 +1016,8 @@ impl MeshRenderer {
             mapped_at_creation: true,
         });
         bb.slice(..(backface_indices.len() * std::mem::size_of::<u32>()) as u64)
-            .get_mapped_range_mut()[..bytemuck::cast_slice::<u32, u8>(backface_indices).len()]
+            .get_mapped_range_mut()
+            .expect("mapped buffer range")
             .copy_from_slice(bytemuck::cast_slice(backface_indices));
         bb.unmap();
         self.backface_index_buffer = Some(bb);
@@ -1190,6 +1193,7 @@ impl MeshRenderer {
         let mut encoder = device.create_command_encoder(&Default::default());
         if let Some(vertices) = &self.vertex_buffer {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                multiview_mask: None,
                 label: Some("Diagnostic ID Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
@@ -1313,6 +1317,7 @@ impl MeshRenderer {
 
         if show_ground && self.ground_visible.get() {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                multiview_mask: None,
                 label: Some("Ground Shadow Depth Pass"),
                 color_attachments: &[],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -1354,6 +1359,7 @@ impl MeshRenderer {
         }
 
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            multiview_mask: None,
             label: Some("Mesh Render Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view,

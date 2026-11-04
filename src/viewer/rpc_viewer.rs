@@ -288,15 +288,18 @@ impl RpcViewerApp {
                                 let render_mesh = extract_render_data(&mesh_data, false);
                                 let gpu = self.gpu.as_ref().ok_or("GPU is not ready")?;
                                 // Prepare the replacement before replacing the currently valid scene.
-                                gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
-                                gpu.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+                                let validation_scope =
+                                    gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+                                let allocation_scope =
+                                    gpu.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
                                 let mut renderer =
                                     MeshRenderer::new(&gpu.device, &gpu.queue, &gpu.config);
                                 if let Err(error) = renderer.load_mesh(
-                                    &gpu.device, &gpu.queue, &render_mesh, &mesh_data.materials,
+                                    &gpu.device,
+                                    &gpu.queue,
+                                    &render_mesh,
+                                    &mesh_data.materials,
                                 ) {
-                                    let _ = pollster::block_on(gpu.device.pop_error_scope());
-                                    let _ = pollster::block_on(gpu.device.pop_error_scope());
                                     return Err(error);
                                 }
                                 if let Some(ref skeleton) = render_mesh.skeleton_data {
@@ -304,8 +307,8 @@ impl RpcViewerApp {
                                         .update_joint_palette(&gpu.queue, &skeleton.joint_matrices);
                                     renderer.set_joint_count(skeleton.joint_matrices.len() as u32);
                                 }
-                                let allocation = pollster::block_on(gpu.device.pop_error_scope());
-                                let validation = pollster::block_on(gpu.device.pop_error_scope());
+                                let allocation = pollster::block_on(allocation_scope.pop());
+                                let validation = pollster::block_on(validation_scope.pop());
                                 if let Some(error) = allocation.or(validation) {
                                     return Err(error.to_string());
                                 }
@@ -736,7 +739,8 @@ impl ApplicationHandler for RpcViewerApp {
                     // Render
                     let surface_texture = gpu.surface.get_current_texture();
                     match surface_texture {
-                        Ok(output) => {
+                        wgpu::CurrentSurfaceTexture::Success(output)
+                        | wgpu::CurrentSurfaceTexture::Suboptimal(output) => {
                             let view = output
                                 .texture
                                 .create_view(&wgpu::TextureViewDescriptor::default());
@@ -793,17 +797,21 @@ impl ApplicationHandler for RpcViewerApp {
                                 }
                             }
 
-                            output.present();
+                            gpu.queue.present(output);
                         }
-                        Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                        wgpu::CurrentSurfaceTexture::Outdated => {
                             gpu.surface.configure(&gpu.device, &gpu.config);
                         }
-                        Err(wgpu::SurfaceError::OutOfMemory) => {
-                            eprintln!("Out of GPU memory");
-                            event_loop.exit();
+                        wgpu::CurrentSurfaceTexture::Lost => {
+                            if let Err(error) = gpu.recreate_surface(window.clone()) {
+                                eprintln!("Failed to recreate surface: {error}");
+                                event_loop.exit();
+                            }
                         }
-                        Err(e) => {
-                            eprintln!("Surface error: {:?}", e);
+                        wgpu::CurrentSurfaceTexture::Timeout
+                        | wgpu::CurrentSurfaceTexture::Occluded => {}
+                        wgpu::CurrentSurfaceTexture::Validation => {
+                            eprintln!("Surface texture validation failed");
                         }
                     }
 

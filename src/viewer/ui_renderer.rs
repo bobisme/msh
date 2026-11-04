@@ -332,6 +332,7 @@ impl UiRenderer {
     /// Render the UI
     pub fn render(&mut self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            multiview_mask: None,
             label: Some("UI Render Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view,

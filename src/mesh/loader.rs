@@ -1046,7 +1046,7 @@ fn load_3mf_with_colors(path: &PathBuf) -> Result<MeshWithColors, Box<dyn std::e
     let model_name = (0..archive.len())
         .filter_map(|i| {
             let entry = archive.by_index(i).ok()?;
-            let name = entry.name().to_string();
+            let name = entry.name().ok()?.into_owned();
             if name.ends_with(".model") {
                 Some(name)
             } else {
@@ -1080,15 +1080,15 @@ fn load_3mf_with_colors(path: &PathBuf) -> Result<MeshWithColors, Box<dyn std::e
         match reader.read_event() {
             Ok(Event::Empty(ref e)) | Ok(Event::Start(ref e)) => {
                 let ln = e.local_name();
-                let local_name = std::str::from_utf8(ln.as_ref()).unwrap_or("");
+                let local_name = ln.as_ref();
                 match local_name {
                     "vertex" => {
                         let mut x = 0.0f32;
                         let mut y = 0.0f32;
                         let mut z = 0.0f32;
                         for attr in e.attributes().flatten() {
-                            let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
-                            let val = std::str::from_utf8(&attr.value).unwrap_or("");
+                            let key = attr.key.as_ref();
+                            let val = attr.value.as_ref();
                             match key {
                                 "x" => x = val.parse().unwrap_or(0.0),
                                 "y" => y = val.parse().unwrap_or(0.0),
@@ -1105,8 +1105,8 @@ fn load_3mf_with_colors(path: &PathBuf) -> Result<MeshWithColors, Box<dyn std::e
                         let mut pid: Option<String> = None;
                         let mut pindex: Option<usize> = None;
                         for attr in e.attributes().flatten() {
-                            let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
-                            let val = std::str::from_utf8(&attr.value).unwrap_or("");
+                            let key = attr.key.as_ref();
+                            let val = attr.value.as_ref();
                             match key {
                                 "v1" => v1 = val.parse().unwrap_or(0),
                                 "v2" => v2 = val.parse().unwrap_or(0),
@@ -1135,9 +1135,9 @@ fn load_3mf_with_colors(path: &PathBuf) -> Result<MeshWithColors, Box<dyn std::e
                     }
                     "colorgroup" | "m:colorgroup" => {
                         for attr in e.attributes().flatten() {
-                            let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
+                            let key = attr.key.as_ref();
                             if key == "id" {
-                                let val = std::str::from_utf8(&attr.value).unwrap_or("");
+                                let val = attr.value.as_ref();
                                 current_color_group_id = Some(val.to_string());
                                 color_groups.entry(val.to_string()).or_default();
                             }
@@ -1146,9 +1146,9 @@ fn load_3mf_with_colors(path: &PathBuf) -> Result<MeshWithColors, Box<dyn std::e
                     "color" | "m:color" => {
                         if let Some(ref group_id) = current_color_group_id {
                             for attr in e.attributes().flatten() {
-                                let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
+                                let key = attr.key.as_ref();
                                 if key == "color" {
-                                    let val = std::str::from_utf8(&attr.value).unwrap_or("");
+                                    let val = attr.value.as_ref();
                                     if let Some(rgba) = parse_hex_color(val) {
                                         color_groups.get_mut(group_id).unwrap().push(rgba);
                                     }
@@ -1159,8 +1159,8 @@ fn load_3mf_with_colors(path: &PathBuf) -> Result<MeshWithColors, Box<dyn std::e
                     "object" => {
                         // Check for default pid/pindex on the object element
                         for attr in e.attributes().flatten() {
-                            let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
-                            let val = std::str::from_utf8(&attr.value).unwrap_or("");
+                            let key = attr.key.as_ref();
+                            let val = attr.value.as_ref();
                             match key {
                                 "pid" => default_pid = Some(val.to_string()),
                                 "pindex" => default_pindex = val.parse().ok(),
@@ -1173,7 +1173,7 @@ fn load_3mf_with_colors(path: &PathBuf) -> Result<MeshWithColors, Box<dyn std::e
             }
             Ok(Event::End(ref e)) => {
                 let ln = e.local_name();
-                let local_name = std::str::from_utf8(ln.as_ref()).unwrap_or("");
+                let local_name = ln.as_ref();
                 if local_name == "colorgroup" || local_name == "m:colorgroup" {
                     current_color_group_id = None;
                 }
@@ -1342,6 +1342,24 @@ pub(crate) mod test_fixtures {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loads_3mf_geometry_and_namespaced_colors() {
+        use std::io::Write;
+        let path = std::env::temp_dir().join(format!("msh-3mf-test-{}.3mf", std::process::id()));
+        let file = std::fs::File::create(&path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        archive
+            .start_file("3D/3dmodel.model", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        archive.write_all(br##"<model xmlns:m="urn:test"><resources><m:colorgroup id="1"><m:color color="#FF0000FF"/></m:colorgroup><object pid="1" pindex="0"><mesh><vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices><triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object></resources></model>"##).unwrap();
+        archive.finish().unwrap();
+        let mesh = load_3mf_with_colors(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(mesh.positions.len(), 3);
+        assert_eq!(mesh.face_indices, vec![[0, 1, 2]]);
+        assert_eq!(mesh.face_colors, vec![[1.0, 0.0, 0.0, 1.0]]);
+    }
 
     #[test]
     fn test_glb_primitives_keep_their_own_materials() {

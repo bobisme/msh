@@ -80,7 +80,7 @@ impl GroundShadow {
             vertex: wgpu::VertexState {
                 module: shader,
                 entry_point: Some("vs_shadow"),
-                buffers: &[Vertex::desc()],
+                buffers: &[Some(Vertex::desc())],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -93,8 +93,8 @@ impl GroundShadow {
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: Default::default(),
                 bias: wgpu::DepthBiasState {
                     constant: 1,
@@ -103,7 +103,7 @@ impl GroundShadow {
                 },
             }),
             multisample: Default::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
         Self {
