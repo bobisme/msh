@@ -158,7 +158,12 @@ fn render_all_tiles(
     };
 
     // Create mesh renderer and load mesh data
-    let mut mesh_renderer = MeshRenderer::new(&device, &queue, &surface_config);
+    let mut mesh_renderer = MeshRenderer::new(
+        &device,
+        &queue,
+        &surface_config,
+        state.environment.as_deref(),
+    );
     mesh_renderer.load_mesh(&device, &queue, &render_mesh, &mesh_data.materials)?;
 
     // Set up initial joint palette if skeleton is present
@@ -246,6 +251,7 @@ fn render_all_tiles(
                 &camera.position(),
                 state.shading.as_u32(),
                 state.base_color,
+                state.override_base_color,
                 state.light_direction,
                 state.background,
                 state.backface_unlit,

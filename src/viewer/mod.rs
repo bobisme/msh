@@ -1,5 +1,6 @@
 pub mod bvh_viewer;
 pub mod camera;
+pub mod environment;
 pub mod gpu;
 mod ground;
 pub mod mesh_renderer;

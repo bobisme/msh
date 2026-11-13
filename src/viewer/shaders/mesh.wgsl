@@ -4,7 +4,7 @@ struct Uniforms {
     view_proj: mat4x4<f32>,
     model: mat4x4<f32>,
     camera_pos: vec3<f32>,
-    _padding: f32,
+    override_base_color: u32,
     // Shading parameters
     shading_mode: u32,      // 0=Lit, 1=Flat, 2=Unlit
     has_vertex_colors: u32, // 1=use per-vertex color, 0=use uniform base_color
@@ -36,7 +36,8 @@ struct Material {
     normal_scale: f32,
     occlusion_strength: f32,
     material_id: u32,
-    uv_transforms: array<vec4<f32>,8>,
+    emissive_factor: vec4<f32>, // RGB factor times strength; W indicates a texture
+    uv_transforms: array<vec4<f32>,10>,
 };
 
 @group(1) @binding(0)
@@ -51,6 +52,14 @@ var metallic_roughness_texture: texture_2d<f32>;
 var occlusion_texture: texture_2d<f32>;
 @group(1) @binding(5)
 var material_sampler: sampler;
+@group(1) @binding(6)
+var emissive_texture: texture_2d<f32>;
+@group(1) @binding(7)
+var environment_texture: texture_2d<f32>;
+@group(1) @binding(8)
+var environment_sampler: sampler;
+@group(1) @binding(9)
+var environment_diffuse: texture_2d<f32>;
 
 struct JointPalette {
     joints: array<mat4x4<f32>, 256>,
@@ -156,7 +165,7 @@ fn material_uv(uv: vec2<f32>, slot: u32) -> vec2<f32> {
 // Resolve base color: material factor (or vertex color / viewer color) * baseColorTexture
 fn resolve_base_color(vertex_color: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {
     var color = material.base_color_factor;
-    if material.use_viewer_color == 1u {
+    if material.use_viewer_color == 1u || (material.use_viewer_color == 2u && uniforms.override_base_color == 1u) {
         let authored_alpha = color.a;
         if uniforms.has_vertex_colors == 1u {
             color = vertex_color;
@@ -182,12 +191,31 @@ fn shading_normal(in: FragmentInput) -> vec3<f32> {
         return face_normal(in.world_position);
     }
     var n = normalize(in.normal);
-    if material.has_normal_texture == 1u && dot(in.tangent.xyz, in.tangent.xyz) > 1e-12 {
-        let t = normalize(in.tangent.xyz - n * dot(n, in.tangent.xyz));
-        let b = cross(n, t) * in.tangent.w;
-        var tn = textureSample(normal_texture, material_sampler, material_uv(in.texcoord,1u)).xyz * 2.0 - 1.0;
-        tn = vec3<f32>(tn.xy * material.normal_scale, tn.z);
-        n = normalize(t * tn.x + b * tn.y + n * tn.z);
+    if material.has_normal_texture == 1u {
+        let uv = material_uv(in.texcoord, 1u);
+        var tangent = in.tangent.xyz;
+        var tangent_sign = in.tangent.w;
+        // glTF permits normals and UVs without authored tangents. Reconstruct a
+        // local frame from screen derivatives for those meshes.
+        if dot(tangent, tangent) < 1e-12 {
+            let dp_x = dpdx(in.world_position);
+            let dp_y = dpdy(in.world_position);
+            let duv_x = dpdx(uv);
+            let duv_y = dpdy(uv);
+            let determinant = duv_x.x * duv_y.y - duv_x.y * duv_y.x;
+            if abs(determinant) > 1e-10 {
+                tangent = (dp_x * duv_y.y - dp_y * duv_x.y) / determinant;
+                let bitangent = (dp_y * duv_x.x - dp_x * duv_y.x) / determinant;
+                tangent_sign = sign(dot(cross(n, tangent), bitangent));
+            }
+        }
+        if dot(tangent, tangent) > 1e-12 {
+            let t = normalize(tangent - n * dot(n, tangent));
+            let b = cross(n, t) * tangent_sign;
+            var tn = textureSample(normal_texture, material_sampler, uv).xyz * 2.0 - 1.0;
+            tn = vec3<f32>(tn.xy * material.normal_scale, tn.z);
+            n = normalize(t * tn.x + b * tn.y + n * tn.z);
+        }
     }
     // Back faces are only rasterized for double-sided materials; light them from their own side
     if !in.front_facing {
@@ -208,6 +236,55 @@ fn resolve_alpha(alpha: f32) -> f32 {
         return 1.0;
     }
     return alpha;
+}
+
+const PI: f32 = 3.141592653589793;
+
+fn fresnel_schlick(f0: vec3<f32>, v_dot_h: f32) -> vec3<f32> {
+    return f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - clamp(v_dot_h, 0.0, 1.0), 5.0);
+}
+
+fn smith_visibility(n_dot_v: f32, n_dot_l: f32, alpha: f32) -> f32 {
+    let a2 = alpha * alpha;
+    let gv = n_dot_l * sqrt(n_dot_v * n_dot_v * (1.0 - a2) + a2);
+    let gl = n_dot_v * sqrt(n_dot_l * n_dot_l * (1.0 - a2) + a2);
+    return 0.5 / max(gv + gl, 1e-6);
+}
+
+fn direct_brdf(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, diffuse: vec3<f32>, f0: vec3<f32>, roughness: f32) -> vec3<f32> {
+    let n_dot_l = max(dot(n, l), 0.0);
+    let n_dot_v = max(dot(n, v), 1e-4);
+    if n_dot_l <= 0.0 { return vec3<f32>(0.0); }
+    let h = normalize(v + l);
+    let n_dot_h = max(dot(n, h), 0.0);
+    let v_dot_h = max(dot(v, h), 0.0);
+    let alpha = roughness * roughness;
+    let a2 = alpha * alpha;
+    let d = n_dot_h * n_dot_h * (a2 - 1.0) + 1.0;
+    let distribution = a2 / max(PI * d * d, 1e-7);
+    let f = fresnel_schlick(f0, v_dot_h);
+    let specular = f * distribution * smith_visibility(n_dot_v, n_dot_l, alpha);
+    return ((vec3<f32>(1.0) - f) * diffuse / PI + specular) * n_dot_l;
+}
+
+// Pre-filtered equirectangular environment and split-sum GGX approximation.
+fn environment_uv(dir: vec3<f32>) -> vec2<f32> {
+    return vec2<f32>(atan2(dir.x, dir.z) / (2.0 * PI) + 0.5,
+                     acos(clamp(dir.y, -1.0, 1.0)) / PI);
+}
+
+fn environment_brdf(n: vec3<f32>, v: vec3<f32>, diffuse: vec3<f32>, f0: vec3<f32>, roughness: f32) -> vec3<f32> {
+    let n_dot_v = max(dot(n, v), 1e-4);
+    let reflected = reflect(-v, n);
+    let irradiance = textureSampleLevel(environment_diffuse, environment_sampler, environment_uv(n), 0.0).rgb;
+    let radiance = textureSampleLevel(environment_texture, environment_sampler, environment_uv(reflected), roughness * 7.0).rgb;
+    // Analytic fit to the integrated GGX/Fresnel term of the split-sum BRDF.
+    let r = roughness * vec4<f32>(-1.0, -0.0275, -0.572, 0.022) + vec4<f32>(1.0, 0.0425, 1.04, -0.04);
+    let a004 = min(r.x * r.x, exp2(-9.28 * n_dot_v)) * r.x + r.y;
+    let ab = vec2<f32>(-1.04, 1.04) * a004 + r.zw;
+    let specular = radiance * (f0 * ab.x + ab.y);
+    let fresnel = fresnel_schlick(f0, n_dot_v);
+    return (vec3<f32>(1.0) - fresnel) * diffuse * irradiance + specular;
 }
 
 @fragment
@@ -232,49 +309,37 @@ fn fs_main(in: FragmentInput) -> @location(0) vec4<f32> {
         return vec4<f32>(base * lighting, alpha);
     }
 
-    // Lit: hemisphere ambient + key/fill lights + specular, driven by metallic-roughness/occlusion
+    // glTF metallic-roughness: GGX distribution, correlated Smith visibility,
+    // Schlick Fresnel, and an energy-conserving Lambertian diffuse lobe.
     let normal = shading_normal(in);
-
+    let view_dir = normalize(uniforms.camera_pos - in.world_position);
     var metallic = material.metallic_factor;
     var roughness = material.roughness_factor;
     if material.has_metallic_roughness_texture == 1u {
-        let mr = textureSample(metallic_roughness_texture, material_sampler, material_uv(in.texcoord,2u));
-        roughness = roughness * mr.g;
-        metallic = metallic * mr.b;
+        let mr = textureSample(metallic_roughness_texture, material_sampler, material_uv(in.texcoord, 2u));
+        roughness *= mr.g;
+        metallic *= mr.b;
     }
+    metallic = clamp(metallic, 0.0, 1.0);
+    roughness = clamp(roughness, 0.045, 1.0);
     var occlusion = 1.0;
     if material.has_occlusion_texture == 1u {
-        let ao = textureSample(occlusion_texture, material_sampler, material_uv(in.texcoord,3u)).r;
-        occlusion = 1.0 + material.occlusion_strength * (ao - 1.0);
+        let ao = textureSample(occlusion_texture, material_sampler, material_uv(in.texcoord, 3u)).r;
+        occlusion = mix(1.0, ao, material.occlusion_strength);
     }
-
+    let f0 = mix(vec3<f32>(0.04), base, metallic);
     let diffuse_color = base * (1.0 - metallic);
-    let specular_color = mix(vec3<f32>(0.04), base, metallic);
-
-    // Sky/ground fill so surfaces facing away from the lights stay readable.
-    // Metals have little diffuse, so they get the fill through their specular color instead
-    // (a stand-in for environment reflections).
-    let sky = vec3<f32>(0.38, 0.40, 0.44);
-    let ground = vec3<f32>(0.16, 0.15, 0.14);
-    let hemi = mix(ground, sky, normal.y * 0.5 + 0.5);
-    let ambient = hemi * occlusion * (diffuse_color + specular_color * metallic);
-
-    let light2_dir = normalize(vec3<f32>(-0.3, -0.5, 0.3));
-    let view_dir = normalize(uniforms.camera_pos - in.world_position);
-
-    let diffuse1 = max(dot(normal, light_dir), 0.0);
-    let diffuse2 = max(dot(normal, light2_dir), 0.0);
-
-    let half_dir = normalize(light_dir + view_dir);
-    let shininess = mix(96.0, 4.0, roughness);
-    let specular_strength = mix(1.0, 0.1, roughness);
-    let specular = pow(max(dot(normal, half_dir), 0.0), shininess) * specular_strength * diffuse1;
-    // Non-metals keep a visible (if dim) highlight rather than the physically tiny 4%
-    let highlight = mix(vec3<f32>(0.25), specular_color, metallic);
-
-    let lit_color = ambient
-        + diffuse_color * (diffuse1 * 0.75 + diffuse2 * 0.25)
-        + highlight * specular;
+    let key = direct_brdf(normal, view_dir, light_dir, diffuse_color, f0, roughness) * 2.0;
+    let fill_dir = normalize(vec3<f32>(-0.3, -0.5, 0.3));
+    let fill = direct_brdf(normal, view_dir, fill_dir, diffuse_color, f0, roughness) * 0.5;
+    let indirect = environment_brdf(normal, view_dir, diffuse_color, f0, roughness) * occlusion;
+    var emissive = material.emissive_factor.rgb;
+    if material.emissive_factor.w > 0.5 {
+        emissive *= textureSample(emissive_texture, material_sampler, material_uv(in.texcoord, 4u)).rgb;
+    }
+    let radiance = key + fill + indirect + emissive;
+    // Reinhard mapping handles radiance above display white while remaining monotonic.
+    let lit_color = radiance / (vec3<f32>(1.0) + radiance);
     return vec4<f32>(lit_color, alpha);
 }
 

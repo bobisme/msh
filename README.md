@@ -67,9 +67,28 @@ msh view character.glb --bvh motion.bvh
 
 The ground shadow follows the mesh and light and is hidden from below. Use
 `--no-ground` to disable it. Transparent backgrounds and the `sprite-bake`
-preset omit it. The viewer supports material textures, alpha modes, normal,
-metallic-roughness and occlusion maps; see the automation notes below for glTF
-and skin limitations.
+preset omit it.
+
+Lit shading uses a metallic-roughness PBR model with GGX highlights, emissive
+materials, normal and occlusion maps, and image-based environment lighting.
+It starts with a built-in studio environment. Supply a linear equirectangular
+Radiance HDR or OpenEXR image to light and reflect your own environment:
+
+```bash
+msh view character.glb --environment studio.hdr
+msh render character.glb --environment studio.exr --out preview.png
+msh serve --environment studio.hdr
+```
+
+The environment lights the model; the viewer background remains independent.
+Environment reflections use prefiltered 128×64 maps and a split-sum
+approximation, so small, bright HDR features can lose detail. The lit output
+uses Reinhard tone mapping. `--shading flat` and `--shading unlit` retain their
+diagnostic and sprite-baking behavior. A `--base-color` or remote color setting
+overrides uniform untextured glTF materials; otherwise their authored base color
+is preserved. See the automation notes below for glTF and skin limitations.
+Normal maps use authored tangents when present and reconstruct a tangent frame
+from normals and UVs when they are absent.
 
 ### Render and animate
 

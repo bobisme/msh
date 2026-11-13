@@ -77,6 +77,7 @@ pub struct ViewerState {
     pub window_size: Option<[u32; 2]>,
     pub rpc_address: Option<String>,
     pub clips_path: Option<PathBuf>,
+    pub environment: Option<std::sync::Arc<super::environment::EnvironmentMap>>,
     /// Projection mode
     pub projection: ProjectionMode,
     /// Background behind the mesh
@@ -85,6 +86,7 @@ pub struct ViewerState {
     pub shading: ShadingMode,
     /// Base color override (RGBA)
     pub base_color: [f32; 4],
+    pub override_base_color: bool,
     /// Light direction (normalized)
     pub light_direction: [f32; 3],
 }
@@ -113,10 +115,12 @@ impl Default for ViewerState {
             window_size: None,
             rpc_address: None,
             clips_path: None,
+            environment: None,
             projection: ProjectionMode::default(),
             background: Background::default(),
             shading: ShadingMode::default(),
             base_color: [0.85, 0.85, 0.85, 1.0],
+            override_base_color: false,
             light_direction: [0.5, 1.0, 0.5],
         }
     }
@@ -303,10 +307,12 @@ impl ViewerState {
             window_size: None,
             rpc_address: None,
             clips_path: None,
+            environment: None,
             projection: ProjectionMode::default(),
             background: Background::default(),
             shading: ShadingMode::default(),
             base_color: [0.85, 0.85, 0.85, 1.0],
+            override_base_color: false,
             light_direction: [0.5, 1.0, 0.5],
         }
     }
@@ -317,6 +323,7 @@ impl ViewerState {
         self.background = preset.background;
         self.shading = preset.shading;
         self.base_color = preset.base_color;
+        self.override_base_color = matches!(preset.shading, ShadingMode::Flat);
         self.light_direction = preset.light_direction;
         self.show_wireframe = preset.show_wireframe;
         self.show_backfaces = preset.show_backfaces;

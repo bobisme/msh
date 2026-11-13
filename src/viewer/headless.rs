@@ -63,7 +63,8 @@ pub fn render_to_file(
     };
 
     // Create mesh renderer and load mesh
-    let mut mesh_renderer = MeshRenderer::new(&device, &queue, &config);
+    let mut mesh_renderer =
+        MeshRenderer::new(&device, &queue, &config, state.environment.as_deref());
     mesh_renderer.load_mesh(&device, &queue, &render_mesh, &mesh_data.materials)?;
 
     // Set up joint palette if skeleton is present
@@ -110,6 +111,7 @@ pub fn render_to_file(
         &camera.position(),
         state.shading.as_u32(),
         state.base_color,
+        state.override_base_color,
         state.light_direction,
         state.background,
         state.backface_unlit,

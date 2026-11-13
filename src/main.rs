@@ -288,6 +288,10 @@ enum Commands {
         #[arg(long, value_parser = parse_color)]
         base_color: Option<(f32, f32, f32, f32)>,
 
+        /// Linear equirectangular HDR or EXR environment for image-based lighting
+        #[arg(long)]
+        environment: Option<PathBuf>,
+
         /// Light direction as x,y,z
         #[arg(long, value_parser = parse_axis)]
         light_dir: Option<(f32, f32, f32)>,
@@ -382,6 +386,10 @@ enum Commands {
         /// Base color as r,g,b,a (0.0-1.0)
         #[arg(long, value_parser = parse_color)]
         base_color: Option<(f32, f32, f32, f32)>,
+
+        /// Linear equirectangular HDR or EXR environment for image-based lighting
+        #[arg(long)]
+        environment: Option<PathBuf>,
 
         /// Light direction as x,y,z
         #[arg(long, value_parser = parse_axis, allow_hyphen_values = true)]
@@ -523,6 +531,9 @@ enum Commands {
     /// Serve persistent offscreen rendering without a desktop window
     #[cfg(feature = "remote")]
     Serve {
+        /// Linear equirectangular HDR or EXR environment for image-based lighting
+        #[arg(long)]
+        environment: Option<PathBuf>,
         #[arg(long, default_value_t = 9001)]
         port: u16,
         #[arg(long, default_value = "800x600", value_parser = parse_size)]
@@ -1214,6 +1225,7 @@ fn main() {
             backface_mode,
             shading,
             base_color,
+            environment,
             light_dir,
             preset,
             z_up,
@@ -1228,7 +1240,9 @@ fn main() {
             };
 
             // Build initial render state from CLI flags
+            let environment = load_environment(environment);
             let build_state = |state: &mut ViewerState| {
+                state.environment = environment.clone();
                 state.clips_path = clips.clone();
                 state.window_size = size;
                 state.window_title = title.clone();
@@ -1289,6 +1303,7 @@ fn main() {
                 }
                 if let Some((r, g, b, a)) = base_color {
                     state.base_color = [r, g, b, a];
+                    state.override_base_color = true;
                 }
                 if let Some((x, y, z)) = light_dir {
                     state.light_direction = [x, y, z];
@@ -1379,6 +1394,7 @@ fn main() {
             backface_mode,
             shading,
             base_color,
+            environment,
             light_dir,
             preset,
             z_up,
@@ -1400,7 +1416,9 @@ fn main() {
                 Background, ProjectionMode, RenderPreset, ShadingMode, ViewerState,
             };
 
+            let environment = load_environment(environment);
             let build_state = |state: &mut ViewerState| {
+                state.environment = environment.clone();
                 state.clips_path = clips.clone();
                 if let Some(ref preset_name) = preset {
                     if let Some(p) = RenderPreset::by_name(preset_name) {
@@ -1457,6 +1475,7 @@ fn main() {
                 }
                 if let Some((r, g, b, a)) = base_color {
                     state.base_color = [r, g, b, a];
+                    state.override_base_color = true;
                 }
                 if let Some((x, y, z)) = light_dir {
                     state.light_direction = [x, y, z];
@@ -1904,6 +1923,7 @@ fn main() {
 
         #[cfg(feature = "remote")]
         Commands::Serve {
+            environment,
             port,
             size,
             no_ground,
@@ -1913,7 +1933,9 @@ fn main() {
             backfaces,
             backface_mode,
         } => {
+            let environment = load_environment(environment);
             let result = viewer::serve::serve(port, size, |state| {
+                state.environment = environment;
                 state.clips_path = clips;
                 state.show_ground = !no_ground;
                 state.show_backfaces = backfaces;
@@ -2266,4 +2288,17 @@ fn parse_size(value: &str) -> Result<[u32; 2], String> {
         return Err("Size must be positive, at most 8192 per axis and 16 megapixels total".into());
     }
     Ok(size)
+}
+
+fn load_environment(
+    path: Option<PathBuf>,
+) -> Option<std::sync::Arc<viewer::environment::EnvironmentMap>> {
+    path.map(|path| {
+        std::sync::Arc::new(
+            viewer::environment::EnvironmentMap::load(&path).unwrap_or_else(|error| {
+                eprintln!("Failed to load environment {}: {error}", path.display());
+                std::process::exit(1);
+            }),
+        )
+    })
 }

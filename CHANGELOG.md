@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.0] - 2026-11-12
+
+### Added
+- Metallic-roughness GGX shading, prefiltered image-based lighting with a built-in studio or `--environment` HDR/EXR, emissive materials and normal-map fallback for meshes without tangents.
+
+### Changed
+- Lit output uses Reinhard tone mapping and preserves authored untextured glTF base colors unless a viewer color override is explicitly selected.
+
 ## [0.8.3] - 2026-11-04
 
 ### Changed

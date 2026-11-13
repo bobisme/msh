@@ -37,8 +37,11 @@ pub struct MaterialData {
     /// Occlusion in R (often the same image as metallic_roughness_texture, i.e. ORM)
     pub occlusion_texture: Option<usize>,
     pub occlusion_strength: f32,
-    /// Two affine rows per texture: base color, normal, metallic/roughness, occlusion.
-    pub uv_transforms: [[f32; 4]; 8],
+    pub emissive_factor: [f32; 3],
+    pub emissive_strength: f32,
+    pub emissive_texture: Option<usize>,
+    /// Two affine rows per texture: base color, normal, metallic/roughness, occlusion, emissive.
+    pub uv_transforms: [[f32; 4]; 10],
     pub alpha_mode: AlphaMode,
     pub alpha_cutoff: f32,
     pub double_sided: bool,
@@ -58,6 +61,9 @@ impl Default for MaterialData {
             normal_scale: 1.0,
             occlusion_texture: None,
             occlusion_strength: 1.0,
+            emissive_factor: [0.0; 3],
+            emissive_strength: 1.0,
+            emissive_texture: None,
             uv_transforms: identity_uv_transforms(),
             alpha_mode: AlphaMode::Opaque,
             alpha_cutoff: 0.5,
@@ -714,8 +720,10 @@ fn load_glb_with_colors(
     })
 }
 
-pub(crate) fn identity_uv_transforms() -> [[f32; 4]; 8] {
+pub(crate) fn identity_uv_transforms() -> [[f32; 4]; 10] {
     [
+        [1., 0., 0., 0.],
+        [0., 1., 0., 0.],
         [1., 0., 0., 0.],
         [0., 1., 0., 0.],
         [1., 0., 0., 0.],
@@ -728,12 +736,13 @@ pub(crate) fn identity_uv_transforms() -> [[f32; 4]; 8] {
 }
 fn material_uv_transforms(
     material: &serde_json::Value,
-) -> Result<[[f32; 4]; 8], Box<dyn std::error::Error>> {
+) -> Result<[[f32; 4]; 10], Box<dyn std::error::Error>> {
     let infos = [
         &material["pbrMetallicRoughness"]["baseColorTexture"],
         &material["normalTexture"],
         &material["pbrMetallicRoughness"]["metallicRoughnessTexture"],
         &material["occlusionTexture"],
+        &material["emissiveTexture"],
     ];
     let mut rows = identity_uv_transforms();
     for (slot, info) in infos.into_iter().enumerate() {
@@ -815,6 +824,9 @@ fn convert_material(
         normal_texture: normal.and_then(|n| load(n.texture())),
         occlusion_strength: occlusion.as_ref().map_or(1.0, |o| o.strength()),
         occlusion_texture: occlusion.and_then(|o| load(o.texture())),
+        emissive_factor: material.emissive_factor(),
+        emissive_strength: material.emissive_strength().unwrap_or(1.0),
+        emissive_texture: material.emissive_texture().and_then(|t| load(t.texture())),
         alpha_mode: match material.alpha_mode() {
             gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
             gltf::material::AlphaMode::Mask => AlphaMode::Mask,
@@ -1342,6 +1354,16 @@ pub(crate) mod test_fixtures {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn emissive_texture_transform_is_parsed_and_unsupported_uvs_rejected() {
+        let mut material = serde_json::json!({"emissiveTexture":{"index":0,"extensions":{"KHR_texture_transform":{"offset":[0.25,0.5],"scale":[2.0,3.0]}}}});
+        let rows = material_uv_transforms(&material).unwrap();
+        assert_eq!(rows[8], [2.0, 0.0, 0.25, 0.0]);
+        assert_eq!(rows[9], [0.0, 3.0, 0.5, 0.0]);
+        material["emissiveTexture"]["texCoord"] = serde_json::json!(1);
+        assert!(material_uv_transforms(&material).is_err());
+    }
 
     #[test]
     fn loads_3mf_geometry_and_namespaced_colors() {

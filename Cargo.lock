@@ -2705,7 +2705,7 @@ dependencies = [
 
 [[package]]
 name = "mshmash"
-version = "0.8.3"
+version = "0.9.0"
 dependencies = [
  "baby_shark",
  "base64 0.23.1",
@@ -2715,6 +2715,7 @@ dependencies = [
  "del-msh-core",
  "font-kit",
  "gltf",
+ "half",
  "image",
  "jsonrpsee",
  "meshopt",

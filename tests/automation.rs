@@ -44,6 +44,9 @@ struct Service {
 }
 impl Service {
     fn start(root: &Scratch, native: bool) -> Self {
+        Self::start_with_environment(root, native, None)
+    }
+    fn start_with_environment(root: &Scratch, native: bool, environment: Option<&str>) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_msh"));
         if native {
             command.args([
@@ -55,6 +58,9 @@ impl Service {
             ]);
         } else {
             command.arg("serve");
+        }
+        if let Some(path) = environment {
+            command.args(["--environment", path]);
         }
         let child = command
             .args(["--port", "0", "--size", "320x240", "--no-ground"])
@@ -350,4 +356,175 @@ fn native_automation_contract() {
     tokio::runtime::Runtime::new()
         .unwrap()
         .block_on(contract(true));
+}
+
+// Exercise authored factors, emissive sRGB texture/strength, and roughness on the
+// actual GPU. A uniform untextured material must keep its authored base color.
+#[test]
+#[ignore = "Requires a Vulkan adapter; runs a windowless executable"]
+fn offscreen_pbr_materials() {
+    use base64::Engine;
+    use std::io::Cursor;
+    let root = Scratch::new();
+    let mut png = Cursor::new(Vec::new());
+    image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]))
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    let texture = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png.into_inner())
+    );
+    let positions: [f32; 9] = [-1., -1., 0., 1., -1., 0., 0., 1., 0.];
+    let normals: [f32; 9] = [0., 0., 1., 0., 0., 1., 0., 0., 1.];
+    let uvs: [f32; 6] = [0., 0., 1., 0., 0.5, 1.];
+    let mut blob = bytemuck::cast_slice(&positions).to_vec();
+    blob.extend(bytemuck::cast_slice(&normals));
+    blob.extend(bytemuck::cast_slice(&uvs));
+    let make = |path: &str, material: Value| {
+        glb(
+            path,
+            json!({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],
+            "buffers":[{"byteLength":96}],"bufferViews":[{"buffer":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":36},{"buffer":0,"byteOffset":72,"byteLength":24}],
+            "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[-1,-1,0],"max":[1,1,0]},
+                         {"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"},{"bufferView":2,"componentType":5126,"count":3,"type":"VEC2"}],
+            "images":[{"uri":texture}],"textures":[{"source":0}],"extensionsUsed":["KHR_materials_emissive_strength"],
+            "materials":[material],"meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2},"material":0}]}]}),
+            blob.clone(),
+        );
+    };
+    let red = root.file("red.glb");
+    let blue = root.file("blue.glb");
+    let dark = root.file("dark.glb");
+    let glow = root.file("glow.glb");
+    let metal_smooth = root.file("metal-smooth.glb");
+    let metal_rough = root.file("metal-rough.glb");
+    let normal = root.file("normal.glb");
+    let no_normal = root.file("no-normal.glb");
+    make(
+        &red,
+        json!({"pbrMetallicRoughness":{"baseColorFactor":[1,0,0,1],"metallicFactor":0,"roughnessFactor":0.5}}),
+    );
+    make(
+        &blue,
+        json!({"pbrMetallicRoughness":{"baseColorFactor":[0,0,1,1],"metallicFactor":0,"roughnessFactor":0.5}}),
+    );
+    make(
+        &dark,
+        json!({"pbrMetallicRoughness":{"baseColorFactor":[0,0,0,1],"metallicFactor":0}}),
+    );
+    make(
+        &glow,
+        json!({"pbrMetallicRoughness":{"baseColorFactor":[0,0,0,1],"metallicFactor":0},"emissiveFactor":[1,1,1],"emissiveTexture":{"index":0},"extensions":{"KHR_materials_emissive_strength":{"emissiveStrength":2.0}}}),
+    );
+    make(
+        &metal_smooth,
+        json!({"pbrMetallicRoughness":{"baseColorFactor":[0.9,0.6,0.2,1],"metallicFactor":1,"roughnessFactor":0.1}}),
+    );
+    make(
+        &metal_rough,
+        json!({"pbrMetallicRoughness":{"baseColorFactor":[0.9,0.6,0.2,1],"metallicFactor":1,"roughnessFactor":0.9}}),
+    );
+    make(
+        &no_normal,
+        json!({"pbrMetallicRoughness":{"baseColorFactor":[0.8,0.8,0.8,1],"metallicFactor":0,"roughnessFactor":0.5}}),
+    );
+    make(
+        &normal,
+        json!({"pbrMetallicRoughness":{"baseColorFactor":[0.8,0.8,0.8,1],"metallicFactor":0,"roughnessFactor":0.5},"normalTexture":{"index":0}}),
+    );
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let service = Service::start(&root, false);
+        service.call("disable_ui", json!([])).await;
+        let mut images = Vec::new();
+        for (i, path) in [
+            &red,
+            &blue,
+            &dark,
+            &glow,
+            &metal_smooth,
+            &metal_rough,
+            &no_normal,
+            &normal,
+        ]
+        .iter()
+        .enumerate()
+        {
+            service.call("load_model", json!([path])).await;
+            service
+                .call("set_camera", json!([[0, 0, 4], [0, 0, 0]]))
+                .await;
+            images.push(service.capture(&root.file(&format!("pbr-{i}.png"))).await);
+        }
+        let pixel = |i: usize| images[i].get_pixel(160, 120).0;
+        assert!(pixel(0)[0] > pixel(0)[2] + 30, "red: {:?}", pixel(0));
+        assert!(pixel(1)[2] > pixel(1)[0] + 30, "blue: {:?}", pixel(1));
+        assert!(
+            pixel(3)[0] > pixel(2)[0] + 100 && pixel(3)[0] > pixel(3)[1] + 100,
+            "emissive: {:?}, dark: {:?}",
+            pixel(3),
+            pixel(2)
+        );
+        assert_ne!(
+            images[4].as_raw(),
+            images[5].as_raw(),
+            "roughness must change reflected lighting"
+        );
+        assert_ne!(
+            pixel(6),
+            pixel(7),
+            "normal map must affect a mesh without tangents"
+        );
+        service.call("load_model", json!([red])).await;
+        service
+            .call("set_base_color", json!([0.0, 1.0, 0.0, 1.0]))
+            .await;
+        let override_pixel = service
+            .capture(&root.file("override.png"))
+            .await
+            .get_pixel(160, 120)
+            .0;
+        assert!(
+            override_pixel[1] > override_pixel[0] + 30,
+            "explicit color override: {override_pixel:?}"
+        );
+        drop(service);
+        let mut hdr_pixels = Vec::new();
+        for (i, rgb) in [[4.0, 0.0, 0.0], [0.0, 0.0, 4.0]].iter().enumerate() {
+            let path = root.file(&format!(
+                "environment-{i}.{}",
+                if i == 0 { "hdr" } else { "exr" }
+            ));
+            if i == 0 {
+                let file = std::fs::File::create(&path).unwrap();
+                image::codecs::hdr::HdrEncoder::new(file)
+                    .encode(&vec![image::Rgb(*rgb); 32], 8, 4)
+                    .unwrap();
+            } else {
+                image::Rgb32FImage::from_pixel(8, 4, image::Rgb(*rgb))
+                    .save(&path)
+                    .unwrap();
+            }
+            let service = Service::start_with_environment(&root, false, Some(&path));
+            service.call("disable_ui", json!([])).await;
+            service.call("load_model", json!([metal_smooth])).await;
+            service
+                .call("set_camera", json!([[0, 0, 4], [0, 0, 0]]))
+                .await;
+            hdr_pixels.push(
+                service
+                    .capture(&root.file(&format!("environment-{i}.png")))
+                    .await
+                    .get_pixel(160, 120)
+                    .0,
+            );
+        }
+        assert!(
+            hdr_pixels[0][0] > hdr_pixels[1][0] + 40,
+            "red HDR: {hdr_pixels:?}"
+        );
+        assert!(
+            hdr_pixels[1][2] > hdr_pixels[0][2] + 20,
+            "blue HDR: {hdr_pixels:?}"
+        );
+    });
 }

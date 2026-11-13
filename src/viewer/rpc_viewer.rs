@@ -292,8 +292,13 @@ impl RpcViewerApp {
                                     gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
                                 let allocation_scope =
                                     gpu.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-                                let mut renderer =
-                                    MeshRenderer::new(&gpu.device, &gpu.queue, &gpu.config);
+                                let environment = self.state.lock().unwrap().environment.clone();
+                                let mut renderer = MeshRenderer::new(
+                                    &gpu.device,
+                                    &gpu.queue,
+                                    &gpu.config,
+                                    environment.as_deref(),
+                                );
                                 if let Err(error) = renderer.load_mesh(
                                     &gpu.device,
                                     &gpu.queue,
@@ -410,6 +415,7 @@ impl RpcViewerApp {
                         if let Ok(mut state) = self.state.lock() {
                             println!("Base color: {:?}", color);
                             state.base_color = color;
+                            state.override_base_color = true;
                         }
                     }
                     ViewerCommand::SetLightDirection { direction } => {
@@ -478,7 +484,9 @@ impl ApplicationHandler for RpcViewerApp {
             let camera = ArcBallCamera::new(eye, target, size.width, size.height);
 
             // Create mesh renderer
-            let mut mesh_renderer = MeshRenderer::new(&gpu.device, &gpu.queue, &gpu.config);
+            let environment = self.state.lock().unwrap().environment.clone();
+            let mut mesh_renderer =
+                MeshRenderer::new(&gpu.device, &gpu.queue, &gpu.config, environment.as_deref());
             if let Err(error) =
                 mesh_renderer.load_mesh(&gpu.device, &gpu.queue, &self.render_mesh, &self.materials)
             {
@@ -673,6 +681,7 @@ impl ApplicationHandler for RpcViewerApp {
                         background,
                         shading_mode,
                         base_color,
+                        override_base_color,
                         light_direction,
                         show_ground,
                     ) = if let Ok(state) = self.state.lock() {
@@ -681,6 +690,7 @@ impl ApplicationHandler for RpcViewerApp {
                             state.background,
                             state.shading.as_u32(),
                             state.base_color,
+                            state.override_base_color,
                             state.light_direction,
                             state.show_ground,
                         )
@@ -690,6 +700,7 @@ impl ApplicationHandler for RpcViewerApp {
                             Background::default(),
                             0,
                             [0.85, 0.85, 0.85, 1.0],
+                            false,
                             [0.5, 1.0, 0.5],
                             true,
                         )
@@ -714,6 +725,7 @@ impl ApplicationHandler for RpcViewerApp {
                         &camera.position(),
                         shading_mode,
                         base_color,
+                        override_base_color,
                         light_direction,
                         background,
                         self.state.lock().map(|s| s.backface_unlit).unwrap_or(false),

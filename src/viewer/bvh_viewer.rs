@@ -396,7 +396,12 @@ impl ApplicationHandler for BvhViewerApp {
                 }
             }
 
-            let mut mesh_renderer = MeshRenderer::new(&gpu.device, &gpu.queue, &gpu.config);
+            let mut mesh_renderer = MeshRenderer::new(
+                &gpu.device,
+                &gpu.queue,
+                &gpu.config,
+                self.state.environment.as_deref(),
+            );
             mesh_renderer.load_mesh_dynamic(
                 &gpu.device,
                 &gpu.queue,
@@ -592,6 +597,7 @@ impl ApplicationHandler for BvhViewerApp {
                         &camera.position(),
                         self.state.shading.as_u32(),
                         self.state.base_color,
+                        self.state.override_base_color,
                         self.state.light_direction,
                         self.state.background,
                         self.state.backface_unlit,

@@ -90,7 +90,13 @@ impl OffscreenScene {
         let mesh = extract_render_data(&data, false);
         let validation_scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let allocation_scope = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-        let mut renderer = MeshRenderer::new(&self.device, &self.queue, &self.config);
+        let environment = self.state.lock().unwrap().environment.clone();
+        let mut renderer = MeshRenderer::new(
+            &self.device,
+            &self.queue,
+            &self.config,
+            environment.as_deref(),
+        );
         if let Err(error) = renderer.load_mesh(&self.device, &self.queue, &mesh, &data.materials) {
             return Err(error.into());
         }
@@ -165,6 +171,7 @@ impl OffscreenScene {
             &self.camera.position(),
             state.shading.as_u32(),
             state.base_color,
+            state.override_base_color,
             state.light_direction,
             state.background,
             state.backface_unlit,
@@ -358,7 +365,11 @@ pub fn serve(port: u16, size: [u32; 2], configure: impl FnOnce(&mut ViewerState)
                 state.lock().unwrap().background = Background::Solid(color)
             }
             ViewerCommand::SetShading { mode } => state.lock().unwrap().shading = mode,
-            ViewerCommand::SetBaseColor { color } => state.lock().unwrap().base_color = color,
+            ViewerCommand::SetBaseColor { color } => {
+                let mut state = state.lock().unwrap();
+                state.base_color = color;
+                state.override_base_color = true;
+            }
             ViewerCommand::SetLightDirection { direction } => {
                 state.lock().unwrap().light_direction = direction
             }

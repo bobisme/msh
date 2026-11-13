@@ -52,7 +52,7 @@ pub struct Uniforms {
     pub view_proj: [[f32; 4]; 4],
     pub model: [[f32; 4]; 4],
     pub camera_pos: [f32; 3],
-    pub _padding: f32,
+    pub override_base_color: u32,
     // Shading parameters
     pub shading_mode: u32,      // 0=Lit, 1=Flat, 2=Unlit
     pub has_vertex_colors: u32, // 1=use per-vertex color, 0=use uniform base_color
@@ -84,7 +84,8 @@ pub struct MaterialUniforms {
     pub normal_scale: f32,
     pub occlusion_strength: f32,
     pub material_id: u32,
-    pub uv_transforms: [[f32; 4]; 8],
+    pub emissive_factor: [f32; 4],
+    pub uv_transforms: [[f32; 4]; 10],
 }
 
 impl MaterialUniforms {
@@ -104,6 +105,7 @@ impl MaterialUniforms {
             normal_scale: 1.0,
             occlusion_strength: 1.0,
             material_id: 1,
+            emissive_factor: [0.0; 4],
             uv_transforms: crate::mesh::loader::identity_uv_transforms(),
         }
     }
@@ -127,6 +129,12 @@ impl MaterialUniforms {
             normal_scale: m.normal_scale,
             occlusion_strength: m.occlusion_strength,
             material_id: 1,
+            emissive_factor: [
+                m.emissive_factor[0] * m.emissive_strength,
+                m.emissive_factor[1] * m.emissive_strength,
+                m.emissive_factor[2] * m.emissive_strength,
+                m.emissive_texture.is_some() as u8 as f32,
+            ],
             uv_transforms: m.uv_transforms,
         }
     }
@@ -236,6 +244,9 @@ pub struct MeshRenderer {
     materials: Vec<GpuMaterial>,
     white_texture: wgpu::TextureView,
     sampler: wgpu::Sampler,
+    environment_texture: wgpu::TextureView,
+    environment_diffuse: wgpu::TextureView,
+    environment_sampler: wgpu::Sampler,
 
     // Joint palette (group 2)
     joint_palette_buffer: wgpu::Buffer,
@@ -256,6 +267,7 @@ impl MeshRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         config: &wgpu::SurfaceConfiguration,
+        environment: Option<&super::environment::EnvironmentMap>,
     ) -> Self {
         // Load shader
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -326,6 +338,15 @@ impl MeshRenderer {
                     texture_entry(2),
                     texture_entry(3),
                     texture_entry(4),
+                    texture_entry(6),
+                    texture_entry(7),
+                    texture_entry(9),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 8,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
                     wgpu::BindGroupLayoutEntry {
                         binding: 5,
                         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -358,12 +379,69 @@ impl MeshRenderer {
             false,
         );
 
+        let environment = match environment {
+            Some(map) => map,
+            None => super::environment::EnvironmentMap::studio(),
+        };
+        let upload_environment = |levels: &[super::environment::EnvironmentLevel]| {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Pre-filtered HDR environment"),
+                size: wgpu::Extent3d {
+                    width: levels[0].width,
+                    height: levels[0].height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: levels.len() as u32,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba16Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            for (level, data) in levels.iter().enumerate() {
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &texture,
+                        mip_level: level as u32,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    bytemuck::cast_slice(&data.pixels),
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(data.width * 8),
+                        rows_per_image: Some(data.height),
+                    },
+                    wgpu::Extent3d {
+                        width: data.width,
+                        height: data.height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+            texture.create_view(&Default::default())
+        };
+        let environment_texture = upload_environment(&environment.specular);
+        let environment_diffuse = upload_environment(std::slice::from_ref(&environment.diffuse));
+        let environment_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Environment sampler"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
+        let default_uniforms = MaterialUniforms::viewer_default();
         let default_material = Self::create_gpu_material(
             device,
             &material_bind_group_layout,
             &sampler,
-            &MaterialUniforms::viewer_default(),
-            [&white_texture; 4],
+            &default_uniforms,
+            [&white_texture; 5],
+            &environment_texture,
+            &environment_diffuse,
+            &environment_sampler,
             AlphaMode::Opaque,
             false,
         );
@@ -626,6 +704,9 @@ impl MeshRenderer {
             materials: Vec::new(),
             white_texture,
             sampler,
+            environment_texture,
+            environment_diffuse,
+            environment_sampler,
             joint_palette_buffer,
             joint_palette_bind_group,
             joint_count: 0,
@@ -731,7 +812,10 @@ impl MeshRenderer {
         layout: &wgpu::BindGroupLayout,
         sampler: &wgpu::Sampler,
         uniforms: &MaterialUniforms,
-        textures: [&wgpu::TextureView; 4],
+        textures: [&wgpu::TextureView; 5],
+        environment: &wgpu::TextureView,
+        environment_diffuse: &wgpu::TextureView,
+        environment_sampler: &wgpu::Sampler,
         alpha_mode: AlphaMode,
         double_sided: bool,
     ) -> GpuMaterial {
@@ -740,7 +824,7 @@ impl MeshRenderer {
             contents: bytemuck::bytes_of(uniforms),
             usage: wgpu::BufferUsages::UNIFORM,
         });
-        let [base, normal, mr, occlusion] = textures;
+        let [base, normal, mr, occlusion, emissive] = textures;
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Material Bind Group"),
             layout,
@@ -768,6 +852,22 @@ impl MeshRenderer {
                 wgpu::BindGroupEntry {
                     binding: 5,
                     resource: wgpu::BindingResource::Sampler(sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(emissive),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::TextureView(environment),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::Sampler(environment_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: wgpu::BindingResource::TextureView(environment_diffuse),
                 },
             ],
         });
@@ -902,11 +1002,12 @@ impl MeshRenderer {
             .map(|(index, m)| {
                 let mut uniforms = MaterialUniforms::from_material(m);
                 uniforms.material_id = index as u32 + 2;
-                uniforms.use_viewer_color = use_viewer_color as u32;
+                uniforms.use_viewer_color = if use_viewer_color { 2 } else { 0 };
                 let base = view_for(m.base_color_texture, true);
                 let normal = view_for(m.normal_texture, false);
                 let mr = view_for(m.metallic_roughness_texture, false);
                 let occlusion = view_for(m.occlusion_texture, false);
+                let emissive = view_for(m.emissive_texture, true);
                 let white = &self.white_texture;
                 Self::create_gpu_material(
                     device,
@@ -918,7 +1019,11 @@ impl MeshRenderer {
                         normal.as_ref().unwrap_or(white),
                         mr.as_ref().unwrap_or(white),
                         occlusion.as_ref().unwrap_or(white),
+                        emissive.as_ref().unwrap_or(white),
                     ],
+                    &self.environment_texture,
+                    &self.environment_diffuse,
+                    &self.environment_sampler,
                     m.alpha_mode,
                     m.double_sided,
                 )
@@ -1115,6 +1220,7 @@ impl MeshRenderer {
         camera_pos: &na::Point3<f32>,
         shading_mode: u32,
         base_color: [f32; 4],
+        override_base_color: bool,
         light_direction: [f32; 3],
         background: Background,
         backface_unlit: bool,
@@ -1148,7 +1254,7 @@ impl MeshRenderer {
             view_proj: (*view_proj).into(),
             model: (*model).into(),
             camera_pos: [camera_pos.x, camera_pos.y, camera_pos.z],
-            _padding: 0.0,
+            override_base_color: override_base_color as u32,
             shading_mode,
             has_vertex_colors: if self.has_vertex_colors { 1 } else { 0 },
             viewport_aspect: self.viewport_aspect,
